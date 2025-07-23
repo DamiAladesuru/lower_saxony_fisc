@@ -2,11 +2,13 @@
 import pandas as pd
 import os
 
-path = "~/Documents/DataAnalysis/Lab/Niedersachsen/final"
-expanded_path = os.path.expanduser(path)
-os.chdir(expanded_path)
+# Set up the project root directory
+script_dir = os.path.dirname(__file__)
+project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
+print(project_root)
 
-print("Current directory:", os.getcwd())
+os.chdir(project_root)
+print("Current working dir:", os.getcwd())
 
 
 from src.data import dataload as dl

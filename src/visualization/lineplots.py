@@ -1,20 +1,20 @@
-# %% Importing modules
+# %%
 import os
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import seaborn as sns
 
+# Set up the project root directory
+script_dir = os.path.dirname(__file__)
+project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
+print(project_root)
 
-path = "~/Documents/DataAnalysis/Lab/Niedersachsen/final"
-expanded_path = os.path.expanduser(path)
-os.chdir(expanded_path)
-
-print("Current directory:", os.getcwd())
+os.chdir(project_root)
+print("Current working dir:", os.getcwd())
 
 from src.analysis.desc import gridgdf_desc as gd
 from src.visualization import plotting_module as pm
-from keep import subsampling_mod as ss
 
 # %% load data
 gld, gridgdf = gd.silence_prints(gd.create_gridgdf)

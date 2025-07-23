@@ -4,11 +4,13 @@ import pandas as pd
 import os
 import pickle
 
-path = "~/Documents/DataAnalysis/Lab/Niedersachsen/final"
-expanded_path = os.path.expanduser(path)
-os.chdir(expanded_path)
+# Set up the project root directory
+script_dir = os.path.dirname(__file__)
+project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
+print(project_root)
 
-print("Current directory:", os.getcwd())
+os.chdir(project_root)
+print("Current working dir:", os.getcwd())
 
 # this script joins the eea grid with the landkreise boundaries of Niedersachsen
 # and saves the result as a pickle file in the interim data folder.

@@ -4,12 +4,13 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+# Set up the project root directory
+script_dir = os.path.dirname(__file__)
+project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
+print(project_root)
 
-path = "~/Documents/DataAnalysis/Lab/Niedersachsen/final"
-expanded_path = os.path.expanduser(path)
-os.chdir(expanded_path)
-
-print("Current directory:", os.getcwd())
+os.chdir(project_root)
+print("Current working dir:", os.getcwd())
 
 
 #%% load extended gridgdf i.e., grid level data with climate, main crop, elevation and other attributes

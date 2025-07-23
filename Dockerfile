@@ -1,10 +1,14 @@
 FROM python:3
 
 # Create and set working directory
-WORKDIR /lower_saxony_fisc
-
-# Copy everything in the current directory (where the Dockerfile is) into the container
-COPY . .
+WORKDIR /app
 
 # Install dependencies
-RUN pip install -r requirements.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy only source code
+COPY src/ ./src/
+
+# Install Jupyter and other tools for VSCode support
+RUN pip install jupyter ipykernel

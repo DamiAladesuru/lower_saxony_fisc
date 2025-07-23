@@ -5,7 +5,13 @@ from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
 import numpy as np
 
-os.chdir("C:/Users/aladesuru/Documents/DataAnalysis/Lab/Niedersachsen/final")
+# Set up the project root directory
+script_dir = os.path.dirname(__file__)
+project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
+print(project_root)
+
+os.chdir(project_root)
+print("Current working dir:", os.getcwd())
 
 from src.analysis.desc import gridgdf_desc as gd
 
