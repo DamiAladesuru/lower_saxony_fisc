@@ -155,7 +155,8 @@ cython_debug/
 # Niedersachsen ignores
 # Ignore data and report folder in main
 data/*
+!data/.gitkeep
 reports/*
-
+!reports/.gitkeep
 Workspaces*
 
