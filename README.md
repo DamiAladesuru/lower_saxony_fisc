@@ -151,11 +151,13 @@ Update as needed.
 **Script:** `src/data/eca_new.py`
 
 **Workflow:**
-1. Load dataset using `dl.load_data`.
+1. Load field dataset (gld_base) using `dl.load_data`.
+2. Load file containing crop codes and descriptions for all years i.e., data/interim/kulturcode/kulturart_allyears.xlsx
 
 **Requirements:**  
 - **Packages:** `pandas`, `seaborn`, `matplotlib`  
-- **Dependencies:** `src.data.dataload`
+- **Dependencies:** `src.data.dataload
+- **Input:** Processed field data and kulturart_allyears.xlsx
 
 ---
 
