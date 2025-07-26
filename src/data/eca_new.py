@@ -552,7 +552,7 @@ def process_kulturcode():
         
         kulturcode_act = get_uni_kulturcode(gld)
         plot_unique_kulturcode_counts(kulturcode_act)
-        kulturart = load_kulturcode_description("N:/ds/data/Niedersachsen/kulturcode/kulturart_allyears.xlsx")
+        kulturart = load_kulturcode_description("data/raw/kulturcode/kulturart_allyears.xlsx")
         kulturcode_map = create_kulturcode_map(kulturcode_act, kulturart)
         kulturcode_map = map_2021_22(kulturcode_map)
         kulturcode_map = fix_missingkulturart(kulturcode_map)
