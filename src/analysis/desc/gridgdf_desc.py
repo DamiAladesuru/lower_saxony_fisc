@@ -292,7 +292,8 @@ def clean_gridgdf(gridgdf):
     
     # Step 7: Create a final outliers DataFrame without the unmatched CELLCODES
     final_outliers = outliers[~(outliers['CELLCODE'].isin(unmatched_outlier_codes))]
-    
+    logging.info(f"Unique CELLCODES with fields < 300 for all 12 years: {final_outliers['CELLCODE'].nunique()}")
+
     # Step 8: Drop rows with specific CELLCODEs and LANDKREIS
     # drop gridgdf_cl rows where ['CELLCODE'].isin(['10kmE431N333', '10kmE431N334'])
     gridgdf_cl = final_cleaned_gridgdf.copy()
