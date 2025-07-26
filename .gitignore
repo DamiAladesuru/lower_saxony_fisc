@@ -154,8 +154,18 @@ cython_debug/
 
 # Niedersachsen ignores
 # Ignore data and report folder in main
+# Ignore everything in data/
 data/*
+
+# Except data/raw/kulturcode/ and its contents
+!data/raw/
+data/raw/*
+!data/raw/kulturcode/
+!data/raw/kulturcode/**
+
+# Optionally, keep .gitkeep if you want empty folders tracked
 !data/.gitkeep
+
 reports/*
 !reports/.gitkeep
 Workspaces*
