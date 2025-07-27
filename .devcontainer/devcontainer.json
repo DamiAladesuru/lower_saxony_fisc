@@ -3,11 +3,12 @@
   "build": {
     "dockerfile": "../Dockerfile"
   },
-  "workspaceFolder": "/workspace",
+ // "workspaceFolder": "/workspace",
   "context": "..", // optional: defines build context if devcontainer is in subfolder
-  "mounts": [
-    "source=${localWorkspaceFolder},target=/workspace,type=bind"
-  ],
+//  "mounts": [
+//    "source=${localWorkspaceFolder},target=/workspace,type=bind"
+//  ],
+  "mounts": ["source=sshvolume,target=/workspaces/lower_saxony_fisc/fdi,type=volume"],
   "settings": {
     "python.defaultInterpreterPath": "/usr/local/bin/python"
   },

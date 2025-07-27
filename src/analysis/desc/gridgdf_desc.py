@@ -8,15 +8,20 @@ import pickle
 # Silence the print statements in a function call
 import contextlib
 import io
-
+from pathlib import Path
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+
+
 
 
 from src.analysis.desc import gld_desc_raw as gdr
@@ -174,7 +179,7 @@ def combine_griddfs(griddf_ext, griddf_exty1):
 # %%
 def to_gdf(griddf_ext):
     # Load Germany grid_landkreise to obtain the geometry
-    with open('data/interim/grid_landkreise.pkl', 'rb') as f:
+    with open(data_main_path+'/interim/grid_landkreise.pkl', 'rb') as f:
         geom = pickle.load(f)
     geom.info()
     
@@ -218,7 +223,7 @@ def process_griddf(gld_ext):
     return gridgdf
 
 def create_gridgdf():
-    output_dir = 'data/interim/gridgdf'
+    output_dir = data_main_path+'/interim/gridgdf'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     

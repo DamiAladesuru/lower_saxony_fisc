@@ -3,17 +3,22 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 import logging
+from src.data import dataload as dl
+from pathlib import Path
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+# Set up the project root directory
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 
-from src.data import dataload as dl
 
 # Initialize logging
 for handler in logging.root.handlers[:]:
@@ -539,7 +544,7 @@ def category3(df, column_name):
 
 def process_kulturcode():
     # Define the path to the CSV file
-    csv_path = 'data/interim/kulturcode_mastermap.csv'
+    csv_path = data_main_path+'/interim/kulturcode_mastermap.csv'
     
     # Check if the CSV file already exists
     if os.path.exists(csv_path):
@@ -552,7 +557,7 @@ def process_kulturcode():
         
         kulturcode_act = get_uni_kulturcode(gld)
         plot_unique_kulturcode_counts(kulturcode_act)
-        kulturart = load_kulturcode_description("N:/ds/data/Niedersachsen/kulturcode/kulturart_allyears.xlsx")
+        kulturart = load_kulturcode_description(data_main_path+"/Niedersachsen/kulturcode/kulturart_allyears.xlsx")
         kulturcode_map = create_kulturcode_map(kulturcode_act, kulturart)
         kulturcode_map = map_2021_22(kulturcode_map)
         kulturcode_map = fix_missingkulturart(kulturcode_map)

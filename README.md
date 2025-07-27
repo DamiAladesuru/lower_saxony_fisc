@@ -130,6 +130,8 @@ Update as needed.
 
 Run `firstoverview.py` for a quick data preview before proceeding to the full data loading workflow, which takes 13 hours. The functions of the script are similar to that of `dataload.py`; just broken down in chunks for easy following. Package and input requirements are also similar to that of `dataload.py`
 
+<> {COMMENTJB: I am not sure if you really need the spatial join for filtering fields out that are not in LS. As this is LS data shouldn't it only include data that is relevant? Or, alternatively, only a tiny fraction of the fields be affected? It might speed up the process considerably. But, of course, it probably doesn't harm to keep it just makes reproduction very time-consuming
+ }
 **Note:** Even within the first overview script, spatial join for filtering fields to within Niedersachsen boundaries takes ~3.5 hours.
 
 - **Packages:** `os`, `zipfile`, `geopandas`, `pandas`, `logging`, `matplotlib`  

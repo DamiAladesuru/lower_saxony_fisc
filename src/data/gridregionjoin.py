@@ -3,14 +3,21 @@ import geopandas as gpd
 import pandas as pd
 import os
 import pickle
+from pathlib import Path
 
+#COMMENTJB: I removed the absolute path names and streamlined the path name variables a bit
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+# Set up the project root directory
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+#%%
 
 # this script joins the eea grid with the landkreise boundaries of Niedersachsen
 # and saves the result as a pickle file in the interim data folder.
@@ -23,11 +30,10 @@ print("Current working dir:", os.getcwd())
 def join_gridregion(loadExistingData=False):
 
     # Define default values
-    base_dir = "N:/ds/data/Niedersachsen/verwaltungseinheiten"
-    output_pickle_dir = 'data/interim'
+    base_dir = data_main_path+"/verwaltungseinheiten"
     
     # define path to data interim
-    intpath = os.path.join('data', 'interim')
+    intpath = data_main_path+'/interim'
         
     # load data if it exists already
     if loadExistingData and os.path.isfile(os.path.join(intpath, 'grid_landkreise.pkl')):
@@ -40,7 +46,7 @@ def join_gridregion(loadExistingData=False):
         landkreise = landkreise.to_crs("EPSG:25832")
         
         # Load Germany eea grid
-        grid = gpd.read_file('data/raw/eea_10_km_eea-ref-grid-de_p_2013_v02_r00')
+        grid = gpd.read_file(data_main_path+'/raw/eea_10_km_eea-ref-grid-de_p_2013_v02_r00')
         grid = grid.to_crs(landkreise.crs)
         # create index for grid in order to create grid_landkreise
         grid_ = grid.reset_index().rename(columns={'index': 'id'})
@@ -129,7 +135,7 @@ def join_gridregion(loadExistingData=False):
         grid_landkreise = grid_landkreise.drop(columns=['id', 'EOFORIGIN', 'NOFORIGIN', 'index_right', 'LK', 'intersection'])
 
         # save to pickle
-        grid_landkreise.to_pickle(os.path.join(output_pickle_dir, 'grid_landkreise.pkl'))
+        grid_landkreise.to_pickle(os.path.join(intpath, 'grid_landkreise.pkl'))
 
     return grid_landkreise
 # %%

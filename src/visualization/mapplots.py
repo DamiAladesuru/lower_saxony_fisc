@@ -1,5 +1,6 @@
 # %%
 import os
+from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 import pandas as pd
@@ -7,15 +8,18 @@ from matplotlib import font_manager
 print(font_manager.findSystemFonts(fontpaths=None, fontext='ttf'))
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 from src.analysis.desc import gridgdf_desc as gd
-
+os.makedirs("reports/figures", exist_ok=True)
 # %% load data
 gld, gridgdf = gd.silence_prints(gd.create_gridgdf)
 # I always want to load gridgdf and process clean gridgdf separately so I can have uncleeaned data for comparison or sensitivity analysis

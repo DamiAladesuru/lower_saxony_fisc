@@ -7,14 +7,20 @@ import pandas as pd
 from datetime import datetime as dt
 import math as m
 import logging
+from pathlib import Path
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+# Set up the project root directory
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+
 
 from src.data import gridregionjoin
 
@@ -174,7 +180,7 @@ def handle_grid_duplicates(allyears_landkreise, grid_landkreise):
 
 
 def load_data(loadExistingData=False):
-    base_dir = "N:/ds/data/Niedersachsen"
+    base_dir = data_main_path+"/Niedersachsen"
     years = range(2012, 2024)
     specific_file_names = [
         "Schlaege_mitNutzung_2012.shp", "Schlaege_mitNutzung_2013.shp",
@@ -183,9 +189,8 @@ def load_data(loadExistingData=False):
         "schlaege_2019.shp", "schlaege_2020.shp", "ud_21_s.shp",
         "Schlaege_2022_ende_ant.shp", "UD_23_S_AKT_ANT.shp"
     ]
-    output_pickle_dir = 'data/interim'
+    intpath = data_main_path+'/interim'
     
-    intpath = os.path.join('data', 'interim')
     existing_file_path = os.path.join(intpath, 'gld_base.pkl')
     
     if loadExistingData and os.path.isfile(existing_file_path):
@@ -240,7 +245,7 @@ def load_data(loadExistingData=False):
         
         
         # Save the combined data to pickle
-        gld_pickle_path = os.path.join(output_pickle_dir, f"gld_base.pkl")
+        gld_pickle_path = os.path.join(intpath, f"gld_base.pkl")
         gld.to_pickle(gld_pickle_path)
         logging.info(f"Saved processed data to {gld_pickle_path}")
         

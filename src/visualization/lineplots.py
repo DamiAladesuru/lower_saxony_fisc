@@ -1,17 +1,22 @@
 # %%
 import os
+from pathlib import Path
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import seaborn as sns
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+os.makedirs("reports/figures", exist_ok=True)
 
 from src.analysis.desc import gridgdf_desc as gd
 from src.visualization import plotting_module as pm
@@ -155,6 +160,7 @@ ackerfutter and winterweichweizen is getreide
 
 # %%
 cropsubsample = 'winterweichweizen'
+#COMMENTJB: what is this function ss.griddf_speci_subsample?
 gld_ss, gridgdf = ss.griddf_speci_subsample(cropsubsample,
                                             col1='kulturart', gld_data = gld)
 
@@ -187,3 +193,4 @@ pm.multiline_metrics(
 
 ################################################################################
 # for plotting this for all crop groups or categories, see script groupcat_plots.py
+# %%

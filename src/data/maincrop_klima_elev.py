@@ -1,5 +1,6 @@
 # %%
 import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -13,12 +14,15 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 # %%
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 
 from src.analysis.desc import gridgdf_desc as gd
@@ -84,7 +88,7 @@ gridgdf = gridgdf_cl[['CELLCODE', 'geometry', 'LANDKREIS']].drop_duplicates('CEL
 
 # Assign KLIMAREGIO
 grid_with_klima = assign_attribute_by_largest_overlap(
-    gridgdf, "data/raw/Klimaregionen.shp", "KLIMAREGIO"
+    gridgdf, data_main_path+"/raw/Klimaregionen/Klimaregionen.shp", "KLIMAREGIO"
 )
 plot_grid_with_attribute(grid_with_klima, "KLIMAREGIO", "10km Grid with KLIMAREGIO")
 
@@ -194,7 +198,7 @@ for col in columns:
 # add mean elevation data
 ###########################################
 # %% 1. checkout raster data
-raster_file_path = "data/raw/lsax_elevation.tif"
+raster_file_path = data_main_path+"/raw/lsax_elevation.tif"
 with rasterio.open(raster_file_path) as src:
     print(f"Raster: {raster_file_path}")
     print(f"- CRS: {src.crs}")
@@ -243,8 +247,8 @@ gridgdf = gridgdf_cluster[['CELLCODE', 'geometry']].drop_duplicates('CELLCODE')
 target_crs = gridgdf.crs
 
 # Input and output paths
-src_path = "data/raw/lsax_elevation.tif"
-dst_path = "data/raw/lsax_elevation_reprojected.tif"
+src_path = data_main_path+"/raw/lsax_elevation.tif"
+dst_path = data_main_path+"/raw/lsax_elevation_reprojected.tif"
 
 with rasterio.open(src_path) as src:
     transform, width, height = calculate_default_transform(
@@ -331,6 +335,13 @@ with rasterio.open(dst_path) as src:
     values = masked_data[0]  # assuming 1 band
     valid_values = values[values != src.nodata]  # or use `np.ma.masked_equal(values, src.nodata).compressed()`
 
+    """
+    COMMENTJB: the values below are not truly "valid_values", because all of them are nan.
+     my alternative suggestion therefore:
+    write:
+    if int(np.invert(np.isnan(masked_data[0])).sum())==0:
+        print("No valid elevation data within this cell")
+    """
     if valid_values.size > 0:
         print(f"Min elevation: {valid_values.min()}")
         print(f"Max elevation: {valid_values.max()}")
@@ -338,12 +349,13 @@ with rasterio.open(dst_path) as src:
     else:
         print("⚠️ No valid elevation data within this cell.")
 
+
 # %% examine the problem cell over elevation plot
 # Filter only missing cells
 missing = gridgdf[gridgdf['mean_elevation'].isna()].copy()
 
 # Load raster and plot
-raster_path = "data/raw/lsax_elevation_reprojected.tif"
+raster_path = data_main_path+"/raw/lsax_elevation_reprojected.tif"
 with rasterio.open(raster_path) as src:
     raster_crs = src.crs
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -399,5 +411,7 @@ gridgdf_cluster_new = gridgdf_cluster.merge(gridgdf[['CELLCODE', 'mean_elevation
 gridgdf_cluster_new.info()
 
 # %% save
-gridgdf_cluster_new.to_pickle("data/interim/gridgdf/gridgdf_klima_crop_elev.pkl")
+gridgdf_cluster_new.to_pickle(data_main_path+"/interim/gridgdf/gridgdf_klima_crop_elev.pkl")
 
+
+# %%
