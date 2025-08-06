@@ -1,20 +1,39 @@
 # %%
+from pathlib import Path
 import os
 import pandas as pd
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 from src.analysis.desc import gridgdf_desc as gd
-
+os.makedirs("reports/kchange_csvs", exist_ok=True)
 #%% load extended gridgdf i.e., grid level data with climate, main crop, elevation and other attributes
 gld, _ = gd.silence_prints(gd.create_gridgdf)
-gridgdf_cluster = pd.read_pickle('data/interim/gridgdf/gridgdf_naturraum_klima_east_elev.pkl')
+gridgdf_cluster = pd.read_pickle(data_main_path+'/interim/gridgdf/gridgdf_naturraum_klima_east_elev.pkl')
+#%%
+#COMMENTJB: sugarbeets are listed for the first time in 2015:
+gld[gld["kulturart"]=="zuckerrüben"]["year"].value_counts()
+#%%
+#COMMENTJB: but steckrübe etc. drasically declines in 2015
+gld[gld["kulturart"]=="steckrübe, kohlrübe (gemüseanbau)"]["year"].value_counts()
+#%%
+#COMMENTJB: triticale disappears as a group in 2015 
+gld[gld["kulturart"]=="triticale"]["year"].value_counts()
+#%%
+#COMMENTJB: but wintertriticale emerges as a group in 2015
+gld[gld["kulturart"]=="wintertriticale"]["year"].value_counts()
+#%%
+gld[gld["kulturart"]=="winterweichweizen"]["year"].value_counts()
+#%%
 
 # %%
 def create_filtered_dfs(gridgdf, year, category_col, category_mapping):

@@ -5,26 +5,30 @@ import os
 import xml.etree.ElementTree as ET
 import geopandas as gpd
 import numpy as np
+from pathlib import Path
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 ###########################################
 # %% load needed existing data
 # gridgdf_cl with naturraum, klima and eastwest columns
-gridgdf_cluster = pd.read_pickle('data/interim/gridgdf/gridgdf_naturraum_klima_east_elev.pkl')
+gridgdf_cluster = pd.read_pickle(data_main_path+'/interim/gridgdf/gridgdf_naturraum_klima_east_elev.pkl')
 
 #############################################
 # %%
 # Step 1: Load animal data xml
 # Unzip the folder containing animal data
-zip_path = 'data/raw/animaldata.zip' 
-extract_path = 'data/raw/animaldata'
+zip_path = data_main_path+'/raw/animaldata.zip' 
+extract_path = data_main_path+'/raw/animaldata'
 
 # Create the directory if it doesn't exist
 if not os.path.exists(extract_path):
@@ -297,8 +301,8 @@ animaldatGVE = animaldatGVE.rename(columns={'Farm_count': 'animalfarms'})
 #############################################################
 # %%
 # Unzip the folder containing animal data
-farmzip_path = 'data/raw/farmdata.zip' 
-farmextract_path = 'data/raw/farmdata'
+farmzip_path = data_main_path+'/raw/farmdata.zip' 
+farmextract_path = data_main_path+'data/raw/farmdata'
 
 # Create the directory if it doesn't exist
 if not os.path.exists(farmextract_path):
@@ -545,13 +549,13 @@ farm_anim = farm_anim.rename(columns={
 farm_anim['stocking_density'] = farm_anim['animal_count'] / farm_anim['total_farm_area']
 print(farm_anim.info())
 # save farm_anim to csv
-farm_anim.to_csv('data/interim/farm_anim.csv', index=False)
+farm_anim.to_csv(data_main_path+'/interim/farm_anim.csv', index=False)
 
 #####################################################################
 # Compute differences
 #####################################################################
 #%% Load the cleaned DataFrame from CSV
-farm_anim = pd.read_csv('data/interim/farm_anim.csv')
+farm_anim = pd.read_csv(data_main_path+'/interim/farm_anim.csv')
 
 # %%
 farm_anim['farmc_ha'] = farm_anim['farm_count'] / farm_anim['total_farm_area']
@@ -648,4 +652,6 @@ grid_fanim.info()
 
 # %% make grid_fanim geodataframes
 grid_fanim = gpd.GeoDataFrame(grid_fanim, geometry='geometry')
-grid_fanim.to_pickle("data/interim/gridgdf/grid_fanim.pkl")
+grid_fanim.to_pickle(data_main_path+"/interim/gridgdf/grid_fanim.pkl")
+
+# %%

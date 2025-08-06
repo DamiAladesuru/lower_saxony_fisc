@@ -3,18 +3,24 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
+from pathlib import Path
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
+
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 os.chdir(project_root)
 print("Current working dir:", os.getcwd())
-
+os.makedirs("reports/figures/farm_field/", exist_ok=True)
 # %%
-grid_fanim = pd.read_pickle("data/interim/gridgdf/grid_fanim.pkl")
+grid_fanim = pd.read_pickle(data_main_path+"/interim/gridgdf/grid_fanim.pkl")
 '''grid_fanim is prepared in gridded_farmanimchange_data.py'''
 
 # %%
@@ -64,7 +70,7 @@ landkreis_counts = grid_fanim.groupby('LANDKREIS')['CELLCODE'].nunique().reset_i
 landkreis_counts.columns = ['LANDKREIS', 'Unique_CELLCODE_Count']
 
 # save to csv
-landkreis_counts.to_csv('data/interim/landkreis_counts.csv', index=False)
+landkreis_counts.to_csv(data_main_path+'/interim/landkreis_counts.csv', index=False)
 
 # 2. Check if each CELLCODE uniquely belongs to a LANDKREIS
 cellcode_landkreis_counts = grid_fanim.groupby('CELLCODE')['LANDKREIS'].nunique().reset_index()

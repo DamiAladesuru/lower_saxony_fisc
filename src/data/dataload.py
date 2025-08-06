@@ -8,6 +8,7 @@ from datetime import datetime as dt
 import math as m
 import logging
 from pathlib import Path
+import sys
 
 # Set up the project root directory
 # Set up the project root directory
@@ -20,10 +21,14 @@ for parent in [current_path] + list(current_path.parents):
         break
 project_root=os.getcwd()
 data_main_path=open(project_root+"/datapath.txt").read()
-
+os.makedirs(data_main_path+"/interim", exist_ok=True)
+sys.path.append(project_root)
 
 from src.data import gridregionjoin
 
+
+
+#%%
 #this script loads the 2012 - 2023 niedersacsen data, filters with landesflaeche shapefile to remove areas outside of niedersacsen boundaries,
 #spatially joins all years with regional information (kreise) and eea reference 10km grid, and prepares it for analysis.
 #the original data extracted from original zip and some renamed for looping can be found in N:\ds\data\Niedersachsen\Niedersachsen\Needed
@@ -40,7 +45,7 @@ for handler in logging.root.handlers[:]:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 logging.info("Logging works!")
-
+os.makedirs(data_main_path+"/interim", exist_ok=True)
 
 # Utility functions for geometric measures
 def paratio(p, a):
@@ -190,6 +195,9 @@ def load_data(loadExistingData=False):
         "Schlaege_2022_ende_ant.shp", "UD_23_S_AKT_ANT.shp"
     ]
     intpath = data_main_path+'/interim'
+
+    #if the directory does not yet exist, create it
+    os.makedirs(intpath, exist_ok=True)
     
     existing_file_path = os.path.join(intpath, 'gld_base.pkl')
     
@@ -255,6 +263,7 @@ def load_data(loadExistingData=False):
 
 #
 if __name__ == '__main__':
+    
     loadExistingData = True
     gld = load_data(loadExistingData)
 
