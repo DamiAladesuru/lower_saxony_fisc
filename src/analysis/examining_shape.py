@@ -1,25 +1,32 @@
 '''In gld, find rows where shape is 1.00'''
 # %%
+from pathlib import Path
 import os
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiPolygon
 import matplotlib.pyplot as plt
 import numpy as np
+from shapely import affinity
+#%%
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+
 
 from src.analysis.desc import gridgdf_desc as gd
 
 
 gld, gridgdf = gd.silence_prints(gd.create_gridgdf)
 gridgdf_cl, _ = gd.clean_gridgdf(gridgdf)
+#%%
 
-# %%
 # Define target values
 target_par_values = [1.00]
 
@@ -52,11 +59,8 @@ print("gld mean SHAPE:", gld['shape'].mean())
 print("gridgdf_cl min SHAPE:", gridgdf_cl['medshape'].min())
 print("gridgdf_cl max SHAPE:", gridgdf_cl['medshape'].max())
 
-# %%
-from shapely import affinity
-import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, MultiPolygon
-import numpy as np
+
+#%%
 
 fig, ax = plt.subplots(1, 2, figsize=(8, 4))
 
@@ -107,4 +111,6 @@ for i, (idx, row) in enumerate(selected.iterrows()):
     )
 
 plt.subplots_adjust(wspace=0.5)
+os.makedirs("reports/figures/", exist_ok=True)
 plt.savefig("reports/figures/examiningshape.svg", format="svg", bbox_inches='tight')
+# %%

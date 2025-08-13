@@ -3,7 +3,7 @@
   "build": {
     "dockerfile": "../Dockerfile"
   },
-  "workspaceFolder": "/workspace",
+  //"workspaceFolder": "/workspace",
   "context": "..", // optional: defines build context if devcontainer is in subfolder
   "mounts": [
     "source=${localWorkspaceFolder},target=/workspace,type=bind"

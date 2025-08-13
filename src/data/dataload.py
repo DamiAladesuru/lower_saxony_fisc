@@ -1,35 +1,33 @@
 #%%
 import os
 import requests
-import pickle
 import zipfile
 import geopandas as gpd
 import pandas as pd
 import math as m
 import tempfile
 import logging
+import gc
+import sys
 from pathlib import Path
 from typing import List, Union
-
-# Initialize logging
-#note that time is displayed in utc by devcontainer default
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-logging.info("Logging works!")
-
-# Set working directory to the project root
-# Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
-
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
-
 from src.data import gridregionjoin
+
+
+# Set up the project root directory
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
+
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+os.makedirs(data_main_path+"/interim", exist_ok=True)
+sys.path.append(project_root)
+print("Current working dir:", project_root)
+
 
 #this script loads the 2012 - 2023 niedersacsen data, filters with landesflaeche shapefile to remove areas outside of niedersacsen boundaries,
 #spatially joins all years with regional information (kreise) and eea reference 10km grid, and prepares it for analysis.
@@ -38,6 +36,16 @@ from src.data import gridregionjoin
 #eea reference data in /data/raw of the current project directory
 
 '''Simply run this script and the processed data will be saved as a pickle file – data/interim/gld_base_ori.pkl.'''
+
+# Initialize logging
+# #note that time is displayed in utc by devcontainer default
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+logging.info("Logging works!")
+os.makedirs(data_main_path+"/interim", exist_ok=True)
 
 #######################Utility functions#########################
 # functions for geometric measures
@@ -235,18 +243,6 @@ def first_index_reset(data, years):
         logging.info(f"{year}: Index has been reset.")
     return data
 
-def spatial_join_with_land(data, years, land):
-    for year in years:
-        data[year] = gpd.sjoin(data[year], land, how='inner', predicate='intersects')
-        logging.info(f"{year}: Spatially joined with land boundary.")
-    return data
-
-def first_duplicates_check(data, years):
-    for year in years:
-        logging.info(f"{year}: Checked for duplicates after joining land. {data[year][['year', 'id']].duplicated().sum()} duplicates found.")
-        data[year].drop(columns=['id', 'index_right', 'LAND'], inplace=True)
-    return data    
-
 def calculate_geometric_measures(all_years):
     all_years['area_m2'] = all_years.area
     all_years['area_ha'] = all_years['area_m2'] * (1/10000)
@@ -255,65 +251,129 @@ def calculate_geometric_measures(all_years):
     all_years['shape'] = all_years.apply(lambda row: shapeindex(row['peri_m'], row['area_m2']), axis=1)
     return all_years
 
-def spatial_join_with_gridregion(all_years, grid_landkreise,):
-    allyears_landkreise = gpd.sjoin(all_years, grid_landkreise, how='left', predicate="intersects")
-    return allyears_landkreise
+def process_and_save_years(data, years, land, out_dir, use_wkb_fallback=False, compression="zstd"):
+    """
+    Process each year: spatial join with land, check duplicates, drop temp cols, save parquet.
+    Skips years if the output file already exists.
+    """
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    saved_paths = {}
 
-def handle_grid_duplicates(allyears_landkreise, grid_landkreise):
+    for year in years:
+        out_path = os.path.join(out_dir, f"gld_{year}.parquet")
+
+        # Skip if already saved
+        if os.path.exists(out_path):
+            logging.info(f"{year}: File already exists at {out_path}, skipping.")
+            saved_paths[year] = out_path
+            continue
+
+        logging.info(f"{year}: Starting processing...")
+
+        # 1. Spatial join
+        gdf = gpd.sjoin(data[year], land, how='inner', predicate='intersects')
+        logging.info(f"{year}: Spatially joined with land boundary.")
+
+        # 2. Duplicate check
+        dup_count = gdf[["year", "id"]].duplicated().sum() if "id" in gdf.columns else 0
+        logging.info(f"{year}: {dup_count} duplicates found after join.")
+
+        # 3. Drop temp columns if they exist
+        drop_cols = [col for col in ['id', 'index_right', 'LAND'] if col in gdf.columns]
+        if drop_cols:
+            gdf.drop(columns=drop_cols, inplace=True)
+            
+        # 4. Calculate geometric measures
+        gdf = calculate_geometric_measures(gdf)
+        logging.info(f"{year}: Calculated geometric measures.")
+
+        # 5. Save to parquet
+        if not use_wkb_fallback:
+            try:
+                gdf.to_parquet(out_path, index=False, compression=compression)
+                logging.info(f"{year}: Saved GeoParquet to {out_path}")
+                saved_paths[year] = out_path
+                del gdf
+                gc.collect()
+                continue
+            except Exception as e:
+                logging.warning(f"{year}: GeoParquet write failed, falling back to WKB. Error: {e}")
+
+        # Fallback: store geometry as WKB
+        gdf["geom_wkb"] = gdf.geometry.apply(lambda g: None if g is None else g.wkb)
+        gdf_no_geom = gdf.drop(columns=[gdf.geometry.name])
+
+        gdf_no_geom.to_parquet(out_path, index=False, compression=compression)
+        logging.info(f"{year}: Saved parquet with WKB geometry to {out_path}")
+        saved_paths[year] = out_path
+
+
+    return saved_paths
+
+
+def spatial_join_with_gridregion(gdf, grid_landkreise):
+    gdf_landkreise = gpd.sjoin(gdf, grid_landkreise, how='left', predicate="intersects")
+    return gdf_landkreise
+
+def handle_grid_duplicates(gdf_landkreise, grid_landkreise):
 
     # Step 1: Identify duplicate entries based on the 'id' column
-    duplicates = allyears_landkreise.duplicated('id')
+    duplicates = gdf_landkreise.duplicated('id')
     print(f"Number of duplicate entries found: {duplicates.sum()}")  # Display the number of duplicates
 
     if duplicates.any():
         # Step 2: Create a DataFrame containing only the double-assigned polygons
-        double = allyears_landkreise[allyears_landkreise.index.isin(
-            allyears_landkreise[allyears_landkreise.index.duplicated()].index
+        double = gdf_landkreise[gdf_landkreise.index.isin(
+            gdf_landkreise[gdf_landkreise.index.duplicated()].index
         )]
 
         # Step 3: Remove these double-assigned polygons from the original DataFrame
-        allyears_landkreise = allyears_landkreise[~allyears_landkreise.index.isin(
-            allyears_landkreise[allyears_landkreise.index.duplicated()].index
+        gdf_landkreise = gdf_landkreise[~gdf_landkreise.index.isin(
+            gdf_landkreise[gdf_landkreise.index.duplicated()].index
         )]
 
         # Step 4: Calculate the intersection area for each polygon in 'double'
-        double['intersection'] = [
+        doublecopy = double.copy()
+        doublecopy['intersection'] = [
             a.intersection(grid_landkreise[grid_landkreise.index == b].geometry.values[0]).area / 10000
-            for a, b in zip(double.geometry.values, double.index_right)
+            for a, b in zip(doublecopy.geometry.values, doublecopy.index_right)
         ]
 
         # Step 5: Sort by intersection area and keep the row with the largest intersection for each 'id'
-        doublesorted = double.sort_values(by='intersection').groupby('id').last().reset_index()
+        doublesorted = (doublecopy.sort_values(by='intersection').groupby('id', group_keys=False)
+                        .apply(lambda g: g.tail(1)).reset_index(drop=True))
 
         # Step 6: Merge the cleaned double-assigned polygons back into the main DataFrame
-        allyears_regions = pd.concat([allyears_landkreise, doublesorted])
+        gdf_regions = pd.concat([gdf_landkreise, doublesorted])
+        
+        # Step 7: recheck for duplicates
+        duplicates_after = gdf_regions.duplicated('id')
+        print(f"Number of duplicate entries after handling: {duplicates_after.sum()}")  #
 
-        return allyears_regions
+        return gdf_regions
     else:
         print("No duplicates found. Returning the original DataFrame.")
-        return allyears_landkreise
+        return gdf_landkreise
 
 # final function to load and process data
 def load_data(loadExistingData=False):
-    base_dir = os.path.join(project_root, "data/raw")
-    schlaege_dir = os.path.join(base_dir, "nieder_origin/schlaege")
-    years = range(2012, 2014)
+    years = range(2012, 2025)
 
     # url list for downloading Niedersachsen Schlaege data
     urls = [
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2024.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2023.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2022.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2021.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2020.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2019.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2018.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2017.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2016.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_skizzen_2015.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_skizzen_2014.zip",
-        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_skizzen_2013.zip",
         "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_skizzen_2012.zip"
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_skizzen_2013.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_skizzen_2014.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_skizzen_2015.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2016.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2017.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2018.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2019.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2020.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2021.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2022.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2023.zip",
+        "https://sla.niedersachsen.de/mapbender_sla/download/schlaege_hauptzahlung_2024.zip",
 
     ]
 
@@ -335,97 +395,134 @@ def load_data(loadExistingData=False):
         [2024, 'schlaege_hauptzahlung_2024.zip', 'ud_24_ts_akt_bewi.shp']
     ]
 
-    output_pickle_dir = os.path.join(project_root, 'data/interim')
-    intpath = output_pickle_dir  # For clarity
-    existing_gld_path = os.path.join(intpath, 'gld_base_ori.pkl')
-    existing_all_years_path = os.path.join(intpath, 'all_years.pkl')
+    # Paths
+    base_dir = data_main_path+"/raw"
+    schlaege_dir = os.path.join(base_dir, "nieder_origin/schlaege")
+    gld_dir = data_main_path+"/interim/gld_per_year"
+    admin_files_dir = os.path.join(base_dir, "verwaltungseinheiten")
 
-    # 1. Try to load final processed data first
-    if loadExistingData and os.path.isfile(existing_gld_path):
-        gld = pd.read_pickle(existing_gld_path)
-        logging.info(f"Loaded existing data from {existing_gld_path}")
-        return gld
+    # Check paths exist for decision logic
+    final_paths = {year: f"{gld_dir}/gld_{year}_gridjoined.parquet" for year in years}
+    init_files  = {year: f"{gld_dir}/gld_{year}.parquet" for year in years}
 
-    # 2. Try to load 'all_years.pkl' and continue pipeline if possible
-    elif loadExistingData and os.path.isfile(existing_all_years_path):
-        all_years = pd.read_pickle(existing_all_years_path)
-        logging.info(f"Loaded existing all_years DataFrame from {existing_all_years_path}")
+    all_field_files_exist = all(os.path.exists(path) for path in final_paths.values())
+    all_init_files_exist  = all(os.path.exists(path) for path in init_files.values())
 
-        # --- resume pipeline from after all_years creation ---
-        # Optionally re-validate nulls if needed
-        missing_values_count = all_years.isnull().any(axis=1).sum()
-        if missing_values_count > 0:
-            logging.info(f"Found {missing_values_count} missing values.")
-            if missing_values_count < 0.01 * len(all_years):
-                all_years = all_years.dropna()
-            else:
-                all_years = all_years.fillna(all_years.mean())
+    # -------------------------------------------------------
+    # CASE 1: Just load final processed files if they exist
+    # -------------------------------------------------------
+    if loadExistingData and all_field_files_exist:
+        logging.info("All grid-joined files already exist. Loaded.")
+        return final_paths
 
-        all_years = calculate_geometric_measures(all_years)
-        logging.info("Calculated geometric measures.")
+    # -------------------------------------------------------
+    # CASE 2: Start from Step 2 if intermediate parquet files exist
+    # -------------------------------------------------------
+    elif loadExistingData and all_init_files_exist:
+        logging.info("Initial files exist. Skipping Step 1, starting from Step 2.")
 
-        all_years = all_years.reset_index().rename(columns={'index': 'id'})
-        grid_landkreise = gridregionjoin.join_gridregion(loadExistingData = True)
-        allyears_landkreise = spatial_join_with_gridregion(all_years, grid_landkreise)
-        allyears_regions = handle_grid_duplicates(allyears_landkreise, grid_landkreise)
-        gld = allyears_regions.drop(columns=['id', 'index_right', 'intersection'])
-        gld.reset_index(drop=True, inplace=True)
-        gld.info()
-        gld_pickle_path = os.path.join(output_pickle_dir, f"gld_base_ori.pkl")
-        gld.to_pickle(gld_pickle_path)
-        logging.info(f"Saved processed data to {gld_pickle_path}")
-        return gld
+        # Load grid region layer and set CRS
+        grid_landkreise = gridregionjoin.join_gridregion(loadExistingData=True)
 
-    # 3. If neither pickles exist, start from raw
+        for year in years:
+            in_parquet  = f"{gld_dir}/gld_{year}.parquet"
+            out_parquet = f"{gld_dir}/gld_{year}_gridjoined.parquet"
+
+            if os.path.exists(out_parquet):
+                logging.info(f"{year}: Already processed. Skipping.")
+                continue
+
+            gdf_year = gpd.read_parquet(in_parquet)
+            gdf_year = gdf_year.reset_index().rename(columns={'index': 'id'})
+            
+            # --- CRS Check and Align ---
+            logging.info(f"{year}: CRS of input data: EPSG:{gdf_year.crs.to_epsg()}")
+            if grid_landkreise.crs != gdf_year.crs:
+                logging.warning(f"{year}: CRS mismatch detected ({grid_landkreise.crs} vs {gdf_year.crs}). Reprojecting.")
+                grid_landkreise.crs = grid_landkreise.to_crs(gdf_year)
+
+            # Spatial join
+            gdf_landkreise = spatial_join_with_gridregion(gdf_year, grid_landkreise)
+            gdf_regions = handle_grid_duplicates(gdf_landkreise, grid_landkreise)
+            gdf_regions = gdf_regions.drop(columns=['id', 'index_right', 'intersection'])
+            gdf_regions = gdf_regions.reset_index().rename(columns={'index': 'id'})
+
+            logging.info(f"{year}: Spatial join complete, {len(gdf_regions)} rows.")
+
+            # Save
+            gdf_regions.to_parquet(out_parquet)
+            logging.info(f"{year}: Saved {out_parquet}")
+
+            del gdf_year, gdf_landkreise, gdf_regions
+            gc.collect()
+
+        return final_paths
+
+    # -------------------------------------------------------
+    # CASE 3: Start from raw data (full pipeline)
+    # -------------------------------------------------------
     else:
-        logging.info("Proceeding with loading and processing new data.")
-        download_zip_files(urls, schlaege_dir) #first, download data if not already downloaded
+        logging.info("Starting full processing pipeline from raw data.")
+
+        #if schlaege_dir or gld_dir does not yet exist, create it
+        os.makedirs(schlaege_dir, exist_ok=True)
+        os.makedirs(gld_dir, exist_ok=True)
+        
+        # Step 1: Download and load
+        download_zip_files(urls, schlaege_dir)
         data = load_geodata(schlaege_dir, data_info)
         data = harmonize_columns(data)
         data = first_index_reset(data, years)
 
-        admin_files_dir = os.path.join(base_dir, "verwaltungseinheiten")
+        # Load admin area shape and set CRS
         land = gpd.read_file(os.path.join(admin_files_dir, "NDS_Landesflaeche.shp"))
         land = land.to_crs(epsg=25832)
-        data = spatial_join_with_land(data, years, land)
-        data = first_duplicates_check(data, years)
 
-        all_years = pd.concat(list(data.values()), ignore_index=True)
-        logging.info(f"Combined data from {years[0]} to {years[-1]}.")
-        all_years.to_pickle(existing_all_years_path)
-        logging.info(f"Saved combined data to {existing_all_years_path}")
+        # Save initial per-year parquet files
+        init_files = process_and_save_years(data, years, land, gld_dir, use_wkb_fallback=False)
 
-        missing_values_count = all_years.isnull().any(axis=1).sum()
-        if missing_values_count > 0:
-            logging.info(f"Found {missing_values_count} missing values.")
-            if missing_values_count < 0.01 * len(all_years):
-                all_years = all_years.dropna()
-            else:
-                all_years = all_years.fillna(all_years.mean())
+        # Step 2: Spatial join with grid_region
+        grid_landkreise = gridregionjoin.join_gridregion(loadExistingData=True)
 
-        all_years = calculate_geometric_measures(all_years)
-        logging.info("Calculated geometric measures.")
+        for year in years:
+            in_parquet  = f"{gld_dir}/gld_{year}.parquet"
+            out_parquet = f"{gld_dir}/gld_{year}_gridjoined.parquet"
 
-        all_years = all_years.reset_index().rename(columns={'index': 'id'})
-        grid_landkreise = gridregionjoin.join_gridregion(loadExistingData = True)
-        allyears_landkreise = spatial_join_with_gridregion(all_years, grid_landkreise)
-        allyears_regions = handle_grid_duplicates(allyears_landkreise, grid_landkreise)
+            if os.path.exists(out_parquet):
+                logging.info(f"{year}: Already processed. Skipping.")
+                continue
 
-        gld = allyears_regions.drop(columns=['id', 'index_right', 'intersection'])
-        gld.reset_index(drop=True, inplace=True)
-        gld.info()
+            gdf_year = gpd.read_parquet(in_parquet)
+            gdf_year = gdf_year.reset_index().rename(columns={'index': 'id'})
+            
+            # --- CRS Check and Align ---
+            logging.info(f"{year}: CRS of input data: {gdf_year.crs}")
+            if grid_landkreise.crs != gdf_year.crs:
+                logging.warning(f"{year}: CRS mismatch detected ({grid_landkreise.crs} vs {gdf_year.crs}). Reprojecting.")
+                grid_landkreise.crs = grid_landkreise.to_crs(gdf_year)
 
-        gld_pickle_path = os.path.join(output_pickle_dir, f"gld_base_ori.pkl")
-        gld.to_pickle(gld_pickle_path)
-        logging.info(f"Saved processed data to {gld_pickle_path}")
-        return gld
+            # Spatial join
+            gdf_landkreise = spatial_join_with_gridregion(gdf_year, grid_landkreise)
+            gdf_regions = handle_grid_duplicates(gdf_landkreise, grid_landkreise)
+            gdf_regions = gdf_regions.drop(columns=['id', 'index_right', 'intersection'])
+            gdf_regions = gdf_regions.reset_index().rename(columns={'index': 'id'})
+
+            logging.info(f"{year}: Spatial join complete, {len(gdf_regions)} rows.")
+
+            # Save
+            gdf_regions.to_parquet(out_parquet)
+            logging.info(f"{year}: Saved {out_parquet}")
+
+            del gdf_year, gdf_landkreise, gdf_regions
+            gc.collect()
+            logging.info("Done!")
+
+        return final_paths
 
     
-
-#
+# %%
 if __name__ == '__main__':
     loadExistingData = True
-    gld = load_data(loadExistingData)
+    gld_paths = load_data(loadExistingData)
 
 
-# %%

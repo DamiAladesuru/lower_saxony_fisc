@@ -4,14 +4,20 @@ import zipfile
 import geopandas as gpd
 import pandas as pd
 import logging
+from pathlib import Path
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+# Set up the project root directory
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+
 
 # Initialize logging
 for handler in logging.root.handlers[:]:
@@ -26,7 +32,7 @@ logging.info("Logging works!")
     running the full dataload workflow which takes about 13 hrs.'''
 
 # %%
-base_dir = "N:/ds/data/Niedersachsen"
+base_dir = data_main_path+"/Niedersachsen"
 years = range(2012, 2024)
 specific_file_names = [
     "Schlaege_mitNutzung_2012.shp", "Schlaege_mitNutzung_2013.shp",
@@ -51,7 +57,8 @@ def load_geodata(base_dir, years, specific_file_names):
                     logging.warning(f"File {specific_file_name} does not exist in {zip_file_path}.")
     return data
 data = load_geodata(base_dir, years, specific_file_names)
-
+#%%
+data
 #---- Basic checks ----#
 # %%
 # Check the CRS of each GeoDataFrame in the data dictionary
@@ -123,7 +130,8 @@ def harmonize_columns(data):
     return data
 
 data2 = harmonize_columns(data)
-
+#%%
+data2
 #---- Check total area of fields ----#
 # %%
 for year in sorted(data2):

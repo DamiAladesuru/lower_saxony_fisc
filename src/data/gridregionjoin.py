@@ -3,14 +3,17 @@ import geopandas as gpd
 import pandas as pd
 import os
 import pickle
+from pathlib import Path
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
-
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 # this script joins the eea grid with the landkreise boundaries of Niedersachsen
 # and saves the result as a pickle file in the interim data folder.
@@ -23,13 +26,11 @@ print("Current working dir:", os.getcwd())
 def join_gridregion(loadExistingData=False):
 
     # Define default values
-    base_dir = os.path.join(project_root, "data/raw")
+    base_dir = data_main_path+"/raw"
     admin_files_dir = os.path.join(base_dir, "verwaltungseinheiten")
-    output_pickle_dir = os.path.join(project_root, 'data/interim')
-    
-    
+
     # define path to data interim
-    intpath = os.path.join(project_root, 'data/interim')
+    intpath = data_main_path+'/interim'
         
     # load data if it exists already
     if loadExistingData and os.path.isfile(os.path.join(intpath, 'grid_landkreise.pkl')):
@@ -131,7 +132,7 @@ def join_gridregion(loadExistingData=False):
         grid_landkreise = grid_landkreise.drop(columns=['id', 'EOFORIGIN', 'NOFORIGIN', 'index_right', 'LK', 'intersection'])
 
         # save to pickle
-        grid_landkreise.to_pickle(os.path.join(output_pickle_dir, 'grid_landkreise.pkl'))
+        grid_landkreise.to_pickle(os.path.join(intpath, 'grid_landkreise.pkl'))
 
     return grid_landkreise
 # %%

@@ -1,15 +1,19 @@
 # %%
+from pathlib import Path
 import os
 import seaborn as sns
 import matplotlib.pyplot as plt
+import pandas as pd
+#
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-# Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
-
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc":
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
 
 from src.data import dataload as dl
 
@@ -32,9 +36,8 @@ data = copy_data(gld)
 # 3. examine data distribution (perhaps clean outliers)
 # 3.1. take two representative years, 1st and last and create distribution plots for
 # numeric columns
-import seaborn as sns
-import pandas as pd
-import matplotlib.pyplot as plt
+ 
+
 def distribution_plots(df):
     numeric_columns = df.select_dtypes(include=['number']).columns
 
@@ -82,9 +85,6 @@ data_trim = data[data['area_m2'] >= 100]  # filter out fields with area_m2 < 100
 
 # %% create a bar plot of the percentage distribution of area_ha in specified ranges
 # to get an understanding of the area distribution with and without outliers
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 def bar_plot(data, column, bins, labels):
     # Bin the data
@@ -153,6 +153,7 @@ def get_numstats(data):
 get_numstats(data_trim)
 
 # %% 4.3. replot the distribution plots for the numeric columns
+#COMMENTJB: why replot here? isn't this plot the same or similar as above?
 def distribution_plots(df):
     numeric_columns = df.select_dtypes(include=['number']).columns
 
@@ -217,6 +218,8 @@ test_correlation(data_trim)
     This association is not observed between par and area,
     nullifying the validity of the formular compared to cpar/shape.'''
 
+
+
 # %% 6
 # general data descriptive statistics grouped by year
 def yearly_gen_statistics(gld):
@@ -258,3 +261,5 @@ ax.set_ylabel('Area (ha)')
 ax.set_xlabel('Year')
 plt.show()
 
+
+# %%
