@@ -23,11 +23,13 @@ print("Current working dir:", os.getcwd())
 def join_gridregion(loadExistingData=False):
 
     # Define default values
-    base_dir = "N:/ds/data/Niedersachsen/verwaltungseinheiten"
-    output_pickle_dir = 'data/interim'
+    base_dir = os.path.join(project_root, "data/raw")
+    admin_files_dir = os.path.join(base_dir, "verwaltungseinheiten")
+    output_pickle_dir = os.path.join(project_root, 'data/interim')
+    
     
     # define path to data interim
-    intpath = os.path.join('data', 'interim')
+    intpath = os.path.join(project_root, 'data/interim')
         
     # load data if it exists already
     if loadExistingData and os.path.isfile(os.path.join(intpath, 'grid_landkreise.pkl')):
@@ -35,12 +37,12 @@ def join_gridregion(loadExistingData=False):
             grid_landkreise = pickle.load(f)
     else:
         # Load Landkreis file for regional boundaries
-        landkreise = gpd.read_file(os.path.join(base_dir, "NDS_Landkreise.shp"))
+        landkreise = gpd.read_file(os.path.join(admin_files_dir, "NDS_Landkreise.shp"))
         landkreise.info()
         landkreise = landkreise.to_crs("EPSG:25832")
         
         # Load Germany eea grid
-        grid = gpd.read_file('data/raw/eea_10_km_eea-ref-grid-de_p_2013_v02_r00')
+        grid = gpd.read_file(os.path.join(base_dir, "eea_10_km_eea-ref-grid-de_p_2013_v02_r00/de_10km.shp"))
         grid = grid.to_crs(landkreise.crs)
         # create index for grid in order to create grid_landkreise
         grid_ = grid.reset_index().rename(columns={'index': 'id'})
@@ -51,7 +53,7 @@ def join_gridregion(loadExistingData=False):
         grid_landkreise.plot()
         
         # compare bounding boxes of land and grid_landkreise to check if all of land is within grid_landkreise
-        land = gpd.read_file(os.path.join(base_dir, "NDS_Landesflaeche.shp"))
+        land = gpd.read_file(os.path.join(admin_files_dir, "NDS_Landesflaeche.shp"))
         land = land.to_crs("EPSG:25832")
                 
         # Calculate total bounding box for land
