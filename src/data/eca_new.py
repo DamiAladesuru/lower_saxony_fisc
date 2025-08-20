@@ -691,7 +691,7 @@ def process_kulturcode(data_main_path, load_existing=True):
     # Check if the CSV file already exists
     if os.path.exists(out_master):
         print("Loading kulturcode_mastermap from CSV.")
-        all_kulturcode_master = pd.read_csv(out_master, encoding='windows-1252')
+        all_kulturcode_master = pd.read_csv(out_master, encoding='utf-8-sig')
     else:
         print("Processing all_kulturcode_master.")
             
