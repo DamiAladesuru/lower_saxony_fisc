@@ -8,7 +8,6 @@ import math as m
 import tempfile
 import logging
 import gc
-import sys
 from pathlib import Path
 from typing import List, Union
 from src.data import gridregionjoin
@@ -24,8 +23,7 @@ for parent in [current_path] + list(current_path.parents):
         break
 project_root=os.getcwd()
 data_main_path=open(project_root+"/datapath.txt").read()
-os.makedirs(data_main_path+"/interim", exist_ok=True)
-sys.path.append(project_root)
+
 print("Current working dir:", project_root)
 
 
@@ -45,7 +43,6 @@ for handler in logging.root.handlers[:]:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logging.info("Logging works!")
-os.makedirs(data_main_path+"/interim", exist_ok=True)
 
 #######################Utility functions#########################
 # functions for geometric measures
@@ -496,7 +493,7 @@ def load_data(loadExistingData=False):
             gdf_year = gdf_year.reset_index().rename(columns={'index': 'id'})
             
             # --- CRS Check and Align ---
-            logging.info(f"{year}: CRS of input data: {gdf_year.crs}")
+            logging.info(f"{year}: CRS of input data: EPSG:{gdf_year.crs.to_epsg()}")
             if grid_landkreise.crs != gdf_year.crs:
                 logging.warning(f"{year}: CRS mismatch detected ({grid_landkreise.crs} vs {gdf_year.crs}). Reprojecting.")
                 grid_landkreise.crs = grid_landkreise.to_crs(gdf_year)

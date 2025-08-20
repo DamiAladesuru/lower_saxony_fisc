@@ -1,9 +1,15 @@
 # %%
-import pandas as pd
-import os
-import matplotlib.pyplot as plt
-import logging
 from pathlib import Path
+import os, re, gc, shutil, zipfile
+import pandas as pd
+import numpy as np
+import chardet
+import copy
+import pdfplumber
+import geopandas as gpd
+from pathlib import Path
+import matplotlib.pyplot as plt
+
 from src.data import dataload as dl
 
 # Set up the project root directory
@@ -13,48 +19,47 @@ for parent in [current_path] + list(current_path.parents):
         os.chdir(parent)
         print(f"Changed working directory to: {parent}")
         break
-project_root=os.getcwd()
-data_main_path=open(project_root+"/datapath.txt").read()
+project_root = os.getcwd()
+data_main_path = open(project_root + "/datapath.txt").read()
 
-# Initialize logging
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
+#  Required directories:
+os.makedirs("reports/Kulturcode", exist_ok=True)
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-logging.info("Logging works!")
-
-# %% 
-# Group by year and get unique values of 'kulturcode' for each year
-def get_uni_kulturcode(gld):
-    output_dir='reports/Kulturcode/kulturcode_act_new.xlsx'
-    # Group by year and get unique values of 'kulturcode' for each year
-    kulturcode_act = gld.groupby('year')['kulturcode'].unique().to_dict()
-
-    # Write the results to an Excel file with each year in a separate sheet
+# PART A:
+# ================================
+# Extract the unique kulturcodes from the gld data
+# and load the kulturart from csv and pdf files.
+# ================================
+# Extract unique kulturcodes from the gld data and save them to an Excel file.
+def get_kultucodes():
+    output_dir = 'reports/Kulturcode/kulturcode_act.xlsx'
+    output_image_path='reports/Kulturcode/unique_kulturcode_counts_by_year.png'
+    gld_paths = dl.load_data(loadExistingData=True)
+    
+    years = range(2012, 2025)
+    kulturcode_act = {}  # Will store year → DataFrame of unique kulturcodes
+    
     with pd.ExcelWriter(output_dir, engine='openpyxl') as writer:
-        for year, kulturcodes in kulturcode_act.items():
-            # Convert the array of unique kulturcodes to a DataFrame
-            df = pd.DataFrame(kulturcodes, columns=['kulturcode'])
-            # Write the DataFrame to a sheet named after the year
+        for year in years:
+            # Load the gld data for the current year
+            gld_path = gld_paths[year]
+            gld = gpd.read_parquet(gld_path)
+            print(f"{year}: CRS of data: EPSG:{gld.crs.to_epsg()}")
+
+            # Get unique values of 'kulturcode' for this year
+            unique_codes = gld['kulturcode'].unique()
+            
+            # Convert to DataFrame immediately
+            df = pd.DataFrame(unique_codes, columns=['kulturcode'])
+            kulturcode_act[year] = df  # Store DataFrame in dictionary
+
+            # Write to Excel sheet
             df.to_excel(writer, sheet_name=str(year), index=False)
+            print(f"Processed year {year} with {len(unique_codes)} unique kulturcodes.")
 
     print(f"Unique kulturcodes by year have been written to '{output_dir}'")
-
-    # Convert kulturcode_act and kulturart keys to numeric values
-    kulturcode_act = {int(key): value for key, value in kulturcode_act.items()}
-    # Print the keys
-    print(kulturcode_act.keys())
-
-    # Print the info for each sheet
-    for key in kulturcode_act:
-        print(f"{key}: {len(kulturcode_act[key])} unique kulturcodes")
-        
-    return kulturcode_act
-
-
-def plot_unique_kulturcode_counts(kulturcode_act):
-    output_image_path='reports/Kulturcode/unique_kulturcode_counts_by_year.png'
+    
+    # Make a plot of the kulturcode counts by year
     # Create a DataFrame to store the year and the count of unique 'kulturcode' values
     df_year = {
         'year': list(kulturcode_act.keys()),
@@ -70,511 +75,703 @@ def plot_unique_kulturcode_counts(kulturcode_act):
     plt.ylabel('Unique Kulturcode Count')
     plt.grid(False)
     plt.savefig(output_image_path)
-    plt.show()
+    plt.show()   
+    
+    return kulturcode_act
 
+# load CSV and PDF files with kulturcodes and get their descriptions.
+def get_kulturcode_desc(data_main_path, save_csv=True, load_existing=True):
+    """
+    Extracts, processes, and returns a dictionary of DataFrames keyed by year.
+    Optionally saves or loads from already processed CSV outputs.
 
-def load_kulturcode_description(file_path):
-    # Load the multiple spreadsheets containing kulturart description and group
-    kulturart = pd.read_excel(file_path, sheet_name=None)
-    # Print the keys
-    print(kulturart.keys())
-      
-    # keep only the columns 'Code', 'Kulturart' and 'Gruppe' for each year and rename 'Code'
-    for key in kulturart:
-        kulturart[key] = kulturart[key][['Code', 'Kulturart', 'Gruppe']]
-        kulturart[key] = kulturart[key].rename(columns={'Code': 'kulturcode'})
-        print(f"{key}: {kulturart[key].info()}")
+    Parameters
+    ----------
+    data_main_path : str
+        Path to the root folder containing the /raw directory
+    save_csv : bool, default True
+        If True, saves each year's processed DataFrame to CSV
+    load_existing : bool, default True
+        If True, loads already processed CSV instead of re-processing
 
-    # Iterate over each year to check if all unique kulturcode values are numbers \
-    # or if there are characters
-    for key in kulturart:
+    Returns
+    -------
+    dict[int, pd.DataFrame]
+        Dictionary where keys are years and values are processed DataFrames
+    """
+
+    # --- Folder setup ---
+    base_dir = os.path.join(data_main_path, "raw")
+    schlaege_dir = os.path.join(base_dir, "nieder_origin/schlaege")
+    kultur_dir = os.path.join(base_dir, "nieder_origin/kulturcodes")
+    kultur_ori_dir = os.path.join(kultur_dir, "kultur_orifiles")
+    kultur_csv_dir = os.path.join(kultur_dir, "kultur_csvfiles")
+
+    # Ensure kultur directories exist. Schlaege directory must already exist with dataload
+    # If schlaege_dir does not exist, you need to run the dataload script first.
+    # or the get_kultucodes function which relies on dataload module.
+    os.makedirs(kultur_ori_dir, exist_ok=True)
+    os.makedirs(kultur_csv_dir, exist_ok=True)
+
+    # --- Year records ---
+    kc_info = [
+        ['year', 'zipped_folder', 'kulturart'],
+        [2012, 'schlaege_skizzen_2012.zip', 'Kulturart.csv'],
+        [2013, 'schlaege_skizzen_2013.zip', 'Kulturart.csv'],
+        [2014, 'schlaege_skizzen_2014.zip', 'Kulturcodes_BNK_2014.pdf'],
+        [2015, 'schlaege_skizzen_2015.zip', 'Kulturcodes_BNK_2015.pdf'],
+        [2016, 'schlaege_hauptzahlung_2016.zip', 'Kulturcodes_BNK_2016.pdf'],
+        [2017, 'schlaege_hauptzahlung_2017.zip', 'Kulturcodes_BNK_2017.pdf'],
+        [2018, 'schlaege_hauptzahlung_2018.zip', 'Kulturcodes_BNK_2018_02.pdf'],
+        [2019, 'schlaege_hauptzahlung_2019.zip', 'Kulturcodes_BNK_2019_04.pdf'],
+        [2020, 'schlaege_hauptzahlung_2020.zip', 'Kulturcodes_BNK_2020_03.pdf'],
+        [2021, 'schlaege_hauptzahlung_2021.zip', 'Kulturcodes_BNK_2021_03.pdf'],
+        [2022, 'schlaege_hauptzahlung_2022.zip', 'Kulturcodes_BNK_2022_04.pdf'],
+        [2023, 'schlaege_hauptzahlung_2023.zip', 'Kulturcodes_BNK_2023_08.pdf'],
+        [2024, 'schlaege_hauptzahlung_2024.zip', 'Kulturcodes_BNK_2024_10.pdf']
+    ]
+    records = [{"year": row[0], "zip": row[1], "kultur": row[2]} for row in kc_info[1:]]
+
+    kulturcode_dict = {}
+
+    # --- Main loop ---
+    for record in records:
+        year = record["year"]
+        kultur_file = record["kultur"]
+        final_csv_path = os.path.join(kultur_csv_dir, f"kulturcodes_{year}.csv")
+
+        # --- NEW: load from existing CSV if allowed ---
+        if load_existing and os.path.exists(final_csv_path):
+            try:
+                df = pd.read_csv(final_csv_path, encoding='utf-8-sig')
+                kulturcode_dict[year] = df
+                print(f"[{year}] Loaded from existing CSV: {final_csv_path}")
+                continue
+            except Exception as e:
+                print(f"[{year}] Failed to load existing CSV, will re-process: {e}")
+
+        # === Extraction & Processing ===
+        zip_path = os.path.join(schlaege_dir, record["zip"])
+        file_path = os.path.join(kultur_ori_dir, f"{year}_{os.path.basename(kultur_file)}")
+
+        if not os.path.exists(file_path):
+            if not os.path.exists(zip_path):
+                print(f"⚠️ Zip file for {year} not found: {zip_path}")
+                continue
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                if kultur_file in z.namelist():
+                    temp_dir = os.path.join(kultur_ori_dir, f"temp_{year}")
+                    os.makedirs(temp_dir, exist_ok=True)
+                    z.extract(kultur_file, temp_dir)
+                    shutil.move(os.path.join(temp_dir, kultur_file), file_path)
+                    shutil.rmtree(temp_dir)
+                    print(f"  Extracted {year}_{os.path.basename(kultur_file)}")
+                else:
+                    print(f"⚠️ {kultur_file} not found in {zip_path}")
+                    continue
+
+        try:
+            # --- Load raw file ---
+            if file_path.endswith(".csv"):
+                with open(file_path, 'rb') as f:
+                    enc_guess = chardet.detect(f.read())['encoding']
+                df = pd.read_csv(file_path, encoding=enc_guess, sep=None, engine='python')
+                df = df.iloc[:, :2]
+            elif file_path.endswith(".pdf"):
+                with pdfplumber.open(file_path) as pdf:
+                    all_rows = []
+                    for page in pdf.pages:
+                        table = page.extract_table()
+                        if table:
+                            all_rows.extend(table)
+                if len(all_rows) > 1:
+                    max_cols = max(len(row) for row in all_rows)
+                    cleaned_rows = [row + [''] * (max_cols - len(row)) for row in all_rows[1:]]
+                    df = pd.DataFrame(cleaned_rows)
+                else:
+                    df = pd.DataFrame()
+            else:
+                continue
+
+            # === CLEANING and YEAR-SPECIFIC RULES ===
+            df.dropna(axis=1, how='all', inplace=True)
+            df = df.replace(r'^\s*$', np.nan, regex=True)
+            df = df.map(lambda x: np.nan if str(x).strip() in ['0','1','2','3'] else x)
+            df.dropna(axis=1, how='all', inplace=True)
+
+            if year in range(2014, 2025):
+                mask = df.iloc[:, 0].isna() & df.iloc[:, 1].notna()
+                df.loc[mask, df.columns[0]] = df.loc[mask, df.columns[1]]
+                df.loc[mask, df.columns[1]] = np.nan
+                df.columns = range(df.shape[1])
+                moved = True
+                while moved:
+                    moved = False
+                    for i in range(1, len(df.columns) - 1):
+                        left_col, right_col = df.columns[i], df.columns[i + 1]
+                        mask = df[left_col].isna() & df[right_col].notna()
+                        if mask.any():
+                            moved = True
+                            df.loc[mask, left_col] = df.loc[mask, right_col]
+                            df.loc[mask, right_col] = np.nan
+
+            # Normalise final output
+            df = df.iloc[:, :2]
+            df.columns = ['Code', 'Kulturart']
+            df = df[df['Code'].notna() & (df['Code'] != '')].reset_index(drop=True)
+
+            # Add Gruppe column
+            gruppe_mask = df['Code'].astype(str).str.contains('Gruppe', na=False)
+            df['Gruppe'] = np.nan
+            df.loc[gruppe_mask, 'Gruppe'] = df.loc[gruppe_mask, 'Kulturart']
+            df['Gruppe'] = df['Gruppe'].ffill().apply(
+                lambda x: re.sub(r'[:\*]', '', str(x)).strip() if pd.notna(x) else x
+            )
+
+            # Code = first 3 digits only
+            df['Code'] = df['Code'].apply(lambda v: ''.join(re.findall(r'\d', str(v))[:3]) if re.findall(r'\d', str(v)) else np.nan)
+            df = df[df['Code'].notna() & (df['Code'] != '')].reset_index(drop=True)
+
+            kulturcode_dict[year] = df
+
+            if save_csv:
+                df.to_csv(final_csv_path, index=False, encoding='utf-8-sig')
+                print(f"[{year}] Saved to {final_csv_path}")
+
+        except Exception as e:
+            print(f"[{year}] Error processing: {e}")
+            
+    # print head for a sample year e.g. 2020
+    if 2020 in kulturcode_dict:
+        print(f"Sample data for 2020:\n{kulturcode_dict[2020].head()}")
+    else:
+        print("No data for 2020 found in kulturcode_dict.")       
+    # Ensure keys are integers and rename columns
+    for key in kulturcode_dict:
+    # rename columns Code and Kulturart to 'kulturcode' and 'kulturart'
+        kulturcode_dict[key].rename(columns={'Code': 'kulturcode', 'Kulturart': 'kulturart'}, inplace=True)
     # Check for non-numeric kulturcode values
-        non_numeric_kulturcodes = [code for code in kulturart[key]['kulturcode'] if not str(code).replace('.', '', 1).isdigit()]
+        non_numeric_kulturcodes = [code for code in kulturcode_dict[key]['kulturcode'] if not str(code).replace('.', '', 1).isdigit()]
         if non_numeric_kulturcodes:
             print(f"{key}: Non-numeric kulturcode values found: {non_numeric_kulturcodes}")
         else:
             print(f"{key}: All kulturcode values are numeric.")
         
-    kulturart = {int(key): value for key, value in kulturart.items()}
-    print(kulturart.keys())      
-        
-        
-    return kulturart
-
-def create_kulturcode_map(kulturcode_act, kulturart):
-    # Initialize an empty dictionary to store the filtered datasets
-    datacodewithart = {}
-
-    # Convert all items in kulturcode_act to DataFrames if they are not already
-    for key in kulturcode_act:
-        if not isinstance(kulturcode_act[key], pd.DataFrame):
-            # Convert to DataFrame and rename the column to 'kulturcode'
-            kulturcode_act[key] = pd.DataFrame(kulturcode_act[key], columns=['kulturcode'])
-        else:
-            # Ensure the column is named 'kulturcode'
-            kulturcode_act[key] = kulturcode_act[key].rename(columns={kulturcode_act[key].columns[0]: 'kulturcode'})
-
-    # Convert all items in kulturart to DataFrames if they are not already
-    for key in kulturart:
-        if not isinstance(kulturart[key], pd.DataFrame):
-            kulturart[key] = pd.DataFrame(kulturart[key])
-
-    # Iterate through the keys (years) in the kulturcode_actual dictionary
-    for key in kulturcode_act:
-        # Check if the key is in the kulturart dictionary
-        if key in kulturart:
-            # Add the dataset to the new dictionary
-            datacodewithart[key] = kulturcode_act[key]
-
-    # For each key in the datacodewithart dictionary, merge data with kulturart data of same key on 'kulturcode' column
-    for key in datacodewithart:
-        datacodewithart[key] = pd.merge(datacodewithart[key], kulturart[key], on='kulturcode', how='left')
-        print(f"{key}: {datacodewithart[key].info()}")
-
-    # For each key in the datacodewithart dictionary, create a year column and set it to the key
-    for key in datacodewithart:
-        datacodewithart[key]['year'] = key
-        print(f"{key}: {datacodewithart[key].info()}")
-
-    # Append all dataframes in the datacodewithart dictionary to a single dataframe
-    # this create a map of unique kulturcodes in data for years with available kulturart description
-    kulturcode_map = pd.concat(datacodewithart.values(), ignore_index=True)
-    kulturcode_map.info()
-
-    return kulturcode_map
-
-# manage years with missing kulturart description
-# take the value of column 'gruppe' for each kulturcode in year 2020 and use it to fill empty \
-    # values in 'gruppe' column for the same kulturcode in year 2021 and 2022
-def map_2021_22(kulturcode_map):
-    # Extract the rows for year 2020
-    kulturcodemap_2020 = kulturcode_map[kulturcode_map['year'] == 2020]
-
-    # Extract the rows for year 2021
-    kulturcodemap_2021 = kulturcode_map[kulturcode_map['year'] == 2021]
-    kulturcodemap_2021 = kulturcodemap_2021.drop(columns='Gruppe')
-
-    # Extract the rows for year 2022
-    kulturcodemap_2022 = kulturcode_map[kulturcode_map['year'] == 2022]
-    kulturcodemap_2022 = kulturcodemap_2022.drop(columns='Gruppe')
-
-    # Merge 2020 df to the dataframes
-    kulturcodemap_2021 = pd.merge(kulturcodemap_2021, kulturcodemap_2020[['kulturcode', 'Gruppe']], on='kulturcode', how='left')
-    kulturcodemap_2022 = pd.merge(kulturcodemap_2022, kulturcodemap_2020[['kulturcode', 'Gruppe']], on='kulturcode', how='left')
-
-    # Print info for kulturcodemap_2020, kulturcodemap_2021 and kulturcodemap_2022
-    print(kulturcodemap_2020.info())
-    print(kulturcodemap_2021.info())
-    print(kulturcodemap_2022.info())
-
-    # Drop the rows with year 2021 and 2022 from the original dataframe
-    kulturcode_map = kulturcode_map[kulturcode_map['year'] != 2021]
-    kulturcode_map = kulturcode_map[kulturcode_map['year'] != 2022]
-
-    # Concatenate the modified 2021 and 2022 dataframes back to the original dataframe
-    kulturcode_map = pd.concat([kulturcode_map, kulturcodemap_2021, kulturcodemap_2022], ignore_index=True)
-
-    # Rename 'Kulturart' column to 'kulturart'
-    kulturcode_map = kulturcode_map.rename(columns={'Kulturart': 'kulturart'})
-
-    kulturcode_map.info()
+    kulturcode_dict = {int(key): value for key, value in kulturcode_dict.items()}
+    print(kulturcode_dict.keys())
     
-    
-    return kulturcode_map
-
-def fix_missingkulturart(kulturcode_map):
-    # Check if there are rows with empty values in 'kulturart' column
-    missing_kulturart = kulturcode_map[kulturcode_map['kulturart'].isnull()]
-    logging.info(f"Number of rows with missing 'kulturart': {missing_kulturart.shape[0]}")
-
-    # Remove rows with missing 'kulturart' from the original DataFrame
-    kulturcode_map = kulturcode_map[~kulturcode_map['kulturart'].isnull()]
-    logging.info(f"Number of rows after removing missing 'kulturart': {kulturcode_map.shape[0]}")
-
-    # Merge kulturcode_map with missing_kulturart on 'kulturcode'
-    kau_df = missing_kulturart.merge(kulturcode_map, on=['kulturcode'], how='left', suffixes=('_missing_kulturart', '_kulturcode_map'))
-    # Calculate the difference in years between the missing 'kulturart' and the 'kulturcode' map
-    kau_df['year_diff'] = kau_df['year_kulturcode_map'] - kau_df['year_missing_kulturart']
-    kau_df = kau_df.dropna(subset=['year_diff'])
-
-    # Split the DataFrame into positive and negative year_diff
-    positive_year_diff_df = kau_df[kau_df['year_diff'] > 0]
-    negative_year_diff_df = kau_df[kau_df['year_diff'] <= 0]
-
-    # Find the nearest following year within 2 years for each kulturcode
-    nearest_following_df = positive_year_diff_df[positive_year_diff_df['year_diff'] <= 2].sort_values('year_diff').drop_duplicates(['kulturcode', 'year_missing_kulturart'])
-
-    # Find the closest previous year for each kulturcode if no nearest following year is found within 2 years
-    closest_previous_df = negative_year_diff_df.sort_values('year_diff', ascending=False).drop_duplicates(['kulturcode', 'year_missing_kulturart'])
-
-    # Combine the results
-    combined_df = pd.concat([nearest_following_df, closest_previous_df]).drop_duplicates(['kulturcode', 'year_missing_kulturart'], keep='first')
-
-    # Update the 'kulturart' in missing_kulturart based on the nearest year found
-    updated_missing_kulturart = missing_kulturart.copy()
-    updated_missing_kulturart = updated_missing_kulturart.merge(combined_df[['kulturcode', 'year_missing_kulturart', 'kulturart_kulturcode_map']], 
-                                                                left_on=['kulturcode', 'year'], 
-                                                                right_on=['kulturcode', 'year_missing_kulturart'], 
-                                                                how='left')
-
-    # Fill the 'kulturart' with the found values
-    updated_missing_kulturart['kulturart'] = updated_missing_kulturart['kulturart_kulturcode_map'].combine_first(updated_missing_kulturart['kulturart'])
-
-    # Drop the helper columns
-    updated_missing_kulturart = updated_missing_kulturart.drop(columns=['year_missing_kulturart', 'kulturart_kulturcode_map'])
-
-    # Save the updated DataFrame to a CSV file (commented out)
-    # updated_missing_kulturart.to_csv('reports/Kulturcode/Fixingkulturart/updated_missing_kulturart.csv', encoding='windows-1252', index=False)
-
-    # Rejoin the updated_missing_kulturart with the original DataFrame
-    kulturcode_map = pd.concat([kulturcode_map, updated_missing_kulturart], ignore_index=True)
-    logging.info(f"Number of rows after rejoining updated_missing_kulturart: {kulturcode_map.shape[0]}")
-    logging.info(f"Number of rows with missing 'kulturart' after rejoining: {kulturcode_map[kulturcode_map['kulturart'].isnull()].shape[0]}")
-
-    # print rows with missing 'kulturart'
-    missing_kulturart = kulturcode_map[kulturcode_map['kulturart'].isnull()]
-    logging.info(f"Missing kulturart:\n{missing_kulturart}")
-
-    # Drop rows still with missing 'kulturart'
-    kulturcode_map = kulturcode_map[~kulturcode_map['kulturart'].isnull()]
+    return kulturcode_dict
 
 
-    return kulturcode_map
+# PART B:
+# ================================
+# Step 1. Harmonization Functions
+# ================================
 
-def fix_gruppe(kulturcode_map):
-    # Identify rows with missing 'Gruppe'
-    missing_gruppe = kulturcode_map[kulturcode_map['Gruppe'].isnull()]
-    logging.info(f"Number of rows with missing 'Gruppe': {missing_gruppe.shape[0]}")
-    # Remove rows with missing 'Gruppe' from the original DataFrame
-    kulturcode_map = kulturcode_map[~kulturcode_map['Gruppe'].isnull()]
-    logging.info(f"Number of rows after removing missing 'Gruppe': {kulturcode_map.shape[0]}")
+def copy_kulturart(kulturart: dict) -> dict:
+    """Deep copy kulturart dictionary."""
+    return {year: df.copy() for year, df in kulturart.items()}
 
-    # Merge missing_gruppe with kulturcode_map on 'kulturcode' and 'kulturart'
-    merged_df = missing_gruppe.merge(kulturcode_map, on=['kulturcode', 'kulturart'], how='left', suffixes=('_missing_gruppe', '_kulturcode_map'))
-    merged_df['year_diff'] = merged_df['year_missing_gruppe'] - merged_df['year_kulturcode_map']
-    merged_df = merged_df.dropna(subset=['year_diff'])
+def fill_gruppe_backwards(data_dict, target_year, manual_fixes=None):
+    """
+    Fill missing 'Gruppe' values in target_year DataFrame by looking back through
+    previous years (target_year-1, target_year-2, ...) until earliest year available.
+    Optionally, apply manual fixes for specific kulturcodes.
 
-    # Function to retain the row with the smallest positive year_diff or the single row
-    def retain_row(group):
-        if len(group) > 1:
-            positive_year_diff = group[group['year_diff'] > 0]
-            if not positive_year_diff.empty:
-                return positive_year_diff.loc[positive_year_diff['year_diff'].idxmin()]
-        return group.iloc[0]
+    Parameters
+    ----------
+    data_dict : dict
+        Dictionary with years as keys and DataFrames as values.
+    target_year : int
+        The year to update with missing Gruppe values.
+    manual_fixes : dict, optional
+        Dictionary of {kulturcode: Gruppe} to apply after backward fill.
 
-    # Group by 'kulturcode', 'kulturart', and 'year_missing_gruppe' and apply the function
-    closest_year_df = merged_df.groupby(['kulturcode', 'kulturart', 'year_missing_gruppe']).apply(retain_row).reset_index(drop=True)
+    Returns
+    -------
+    data_dict : dict
+        Updated dictionary with filled Gruppe values in target_year.
+    missing_codes : set
+        Set of kulturcodes that remain without Gruppe after searching all years and applying fixes.
+    """
+    df_target = data_dict[target_year].copy()
+    df_target["Gruppe"] = df_target["Gruppe"].astype("string")
 
-    # Create a dictionary for easy lookup
-    closest_year_dict = closest_year_df.set_index(['kulturcode', 'kulturart', 'year_missing_gruppe'])['Gruppe_kulturcode_map'].to_dict()
+    # get all years less than target, sorted descending (most recent first)
+    previous_years = sorted([y for y in data_dict.keys() if y < target_year], reverse=True)
 
-    # Function to update the 'Gruppe' value in missing_gruppe based on the dictionary
-    def update_Gruppe(row):
-        return closest_year_dict.get((row['kulturcode'], row['kulturart'], row['year']), None)
+    # backward fill from previous years
+    for year in previous_years:
+        missing_mask = df_target["Gruppe"].isna()
+        if not missing_mask.any():
+            break
+        
+        df_source = data_dict[year]
+        gruppe_map = (
+            df_source.dropna(subset=["Gruppe"])
+                     .drop_duplicates(subset=["kulturcode"], keep="first")
+                     .set_index("kulturcode")["Gruppe"]
+        )
+        df_target.loc[missing_mask, "Gruppe"] = (
+            df_target.loc[missing_mask, "kulturcode"].map(gruppe_map).astype("string")
+        )
 
-    # Apply the function to update missing_gruppe
-    missing_gruppe['Gruppe'] = missing_gruppe.apply(update_Gruppe, axis=1)
+    # apply manual fixes if provided
+    if manual_fixes:
+        for kode, gruppe in manual_fixes.items():
+            df_target.loc[df_target["kulturcode"] == kode, "Gruppe"] = gruppe
 
-    # Rejoin the updated missing_gruppe with the original DataFrame
-    kulturcode_map = pd.concat([kulturcode_map, missing_gruppe], ignore_index=True)
+    # Update dict
+    data_dict[target_year] = df_target
 
-    # Drop rows still with missing 'Gruppe'
-    missing_gruppe = kulturcode_map[kulturcode_map['Gruppe'].isnull()]
-    kulturcode_map = kulturcode_map[~kulturcode_map['Gruppe'].isnull()]
+    # report kulturcodes still missing
+    missing_codes = set(df_target.loc[df_target["Gruppe"].isna(), "kulturcode"])
+    if missing_codes:
+        print(f"⚠️ Still missing Gruppe for kulturcodes in {target_year}: {missing_codes}")
 
-    # Update 'Gruppe' based on specific 'kulturcode' values
-    missing_gruppe.loc[missing_gruppe['kulturcode'].isin([48, 49, 866, 722, 764]), 'Gruppe'] = 'Sonstige Flächen'
-    missing_gruppe.loc[missing_gruppe['kulturcode'].isin([513, 514, 669, 687]), 'Gruppe'] = 'Küchenkräuter/Heil-und Gewürzpflanzen'
+    return data_dict, missing_codes
 
-    # Rejoin the updated missing_gruppe with the original DataFrame
-    kulturcode_map = pd.concat([kulturcode_map, missing_gruppe], ignore_index=True)
-    logging.info(f"Number of rows with missing 'Gruppe' after rejoining: {kulturcode_map[kulturcode_map['Gruppe'].isnull()].shape[0]}")
 
-    return kulturcode_map
-
-def review_groups(kulturcode_map):
-    # get a list of all unique values in the 'Gruppe' column
-    unique_gruppe = kulturcode_map['Gruppe'].unique()
-    logging.info(unique_gruppe)
-
-    # Define the mapping for Gruppe values
-    gruppe_mapping = {
-        'AUKM/GoG': 'AUKM',
-        'AUKM/ unproduktive Fläche': 'AUKM',
-        'unproduktive Fläche': 'AUKM',
-        'Ackerfutter/GoG': 'Ackerfutter',
-        'Sonstige  Flächen': 'Sonstige Flächen',
-        'Sonstige LF auf AL': 'Sonstige Flächen',
-        'Sonstige Flächen': 'Sonstige Flächen',
-        'Aufforstung': 'Stilllegung/Aufforstung',
-        'Stilllegung/Aufforstung': 'Stilllegung/Aufforstung',
-        'Aus der Erzeugung genommen': 'Aus der Produktion genommen',
-        'Aus der Produktion/Erzeugung genommen': 'Aus der Produktion genommen',
-        'Leg-Mischung': 'Leguminosen'
+def map_gruppe(val: str) -> str:
+    mapping = {
+        'Greening / Landschaftselemente': 'GLK',
+        'Greening': 'GLK',
+        'Konditionalität (als Bindung)': 'GLK',
+        'Aus der Produktion genommen': 'Aus der Produktion/Erzeugung genommen',
+        'Aus der Erzeugung genommen': 'Aus der Produktion/Erzeugung genommen',
+        'Aus der Produktion/Erzeugung genommen': 'Aus der Produktion/Erzeugung genommen',
+        'Sonstige LF auf AL': 'Sonstige Flächen'
     }
+    return mapping.get(val, val)
+
+
+def apply_gruppe_mapping(kulturart_ha: dict) -> None:
+    for year in kulturart_ha:
+        kulturart_ha[year]['Gruppe'] = kulturart_ha[year]['Gruppe'].apply(map_gruppe)
+    gc.collect()
+
+
+def apply_special_mappings(kulturart_ha: dict, special_map: dict, years=(2012, 2013, 2014)) -> None:
+    for year in years:
+        df = kulturart_ha[year]
+        for new_code, old_codes in special_map.items():
+            mask = df['kulturcode'].isin(old_codes)
+            df.loc[mask, 'new_kulturcode'] = new_code
+
+            if new_code == 715:
+                df.loc[mask, ['new_kulturart', 'new_Gruppe']] = ['Gemüse', 'Gemüse']
+            elif new_code == 815:
+                df.loc[mask, ['new_kulturart', 'new_Gruppe']] = ['Dauerkulturen', 'Dauerkulturen']
+
+        # fill defaults
+        df['new_kulturcode'] = df['new_kulturcode'].fillna(df['kulturcode']).astype('Int64')
+        df['new_kulturart'] = df['new_kulturart'].fillna(df['kulturart'])
+        df['new_Gruppe'] = df['new_Gruppe'].fillna(df['Gruppe'])
+    gc.collect()
+
+
+def range_new_kulturcode(row):
+    code = int(row.get('new_kulturcode', row['kulturcode']))
+    gruppe = row.get('new_Gruppe', row.get('Gruppe', ''))
+    if (52 <= code <= 66) or (gruppe == 'GLK'): return 55
+    if 81 <= code <= 97: return 85
+    if 545 <= code <= 587: return 555
+    if 590 <= code <= 595: return 595
+    if 650 <= code <= 687: return 655
+    if 701 <= code <= 710: return 705
+    if 720 <= code <= 799: return 725
+    if 801 <= code <= 806: return 805
+    if 897 <= code <= 999: return 900
+    return code
+
+
+def apply_range_mapping(kulturart_ha: dict) -> dict:
+    new_kulturart_ha = {}
+    for year, df in kulturart_ha.items():
+        df = df.copy()
+        df['old_kulturcode'] = df['kulturcode']
+        df['new_kulturcode'] = df.get('new_kulturcode', df['kulturcode'])
+        df['new_kulturcode'] = df.apply(range_new_kulturcode, axis=1)
+        df['new_Gruppe'] = df.get('new_Gruppe', df['Gruppe'])
+        df['new_kulturart'] = df.get('new_kulturart', df['kulturart'])
+
+        # 🔑 Ensure range-mapped codes get kulturart = Gruppe
+        range_codes = {55, 85, 555, 595, 655, 705, 725, 805, 900}
+        mask = df['new_kulturcode'].isin(range_codes)
+        df.loc[mask, 'new_kulturart'] = df.loc[mask, 'new_Gruppe']
+
+        new_kulturart_ha[year] = df[['old_kulturcode', 'new_kulturcode', 'new_kulturart', 'new_Gruppe']].rename(
+            columns={
+                'new_kulturcode': 'kulturcode',
+                'new_kulturart': 'kulturart',
+                'new_Gruppe': 'Gruppe'
+            }
+        )
+        del df
+        gc.collect()
+    return new_kulturart_ha
+
+
+# ================================
+# Step 2. Multi-Gruppe Handling
+# ================================
+
+def build_inconsistent_report(new_kulturart_ha: dict, out_path: Path) -> pd.DataFrame:
+    """
+    Build a report of inconsistent Gruppe assignments and return
+    the most recent Gruppe for all kulturcodes.
+
+    Parameters
+    ----------
+    new_kulturart_ha : dict
+        Dictionary of DataFrames with year as key.
+    out_path : Path
+        Path to save the CSV report.
+
+    Returns
+    -------
+    most_recent : pd.DataFrame
+        DataFrame mapping every old_kulturcode to its most recent Gruppe.
+    """
+    # Step 1: Concatenate all years
+    all_years_list = []
+    for year, df in new_kulturart_ha.items():
+        temp_df = df[['kulturcode', 'Gruppe']].copy()
+        temp_df['year'] = year
+        all_years_list.append(temp_df)
+    all_years_df = pd.concat(all_years_list, ignore_index=True)
+
+    # Step 2: Ensure Gruppe is string and fill missing temporarily
+    all_years_df['Gruppe'] = all_years_df['Gruppe'].fillna('').astype(str)
+
+    # Step 3: Identify inconsistent codes
+    group_counts = all_years_df.groupby('kulturcode')['Gruppe'].nunique()
+    multi_codes = group_counts[group_counts > 1].index
+
+    # Step 4: Pivot for inspection
+    multi_df = all_years_df[all_years_df['kulturcode'].isin(multi_codes)]
+    pivot_df = multi_df.pivot_table(
+        index='kulturcode', columns='year', values='Gruppe', aggfunc='first'
+    )
+    pivot_df.columns = [f"Gruppe_{c}" for c in pivot_df.columns]
+
+    # Step 5: Concatenate Gruppe values for inconsistent codes
+    gruppe_concat = multi_df.groupby('kulturcode')['Gruppe'].apply(
+        lambda v: " | ".join(sorted(set(filter(lambda x: x != '', v))))
+    )
+
+    # Step 6: Pick the most recent non-empty Gruppe for all codes
+    non_empty_df = all_years_df[all_years_df['Gruppe'] != '']
+    most_recent = (
+        non_empty_df
+        .sort_values(['kulturcode', 'year'], ascending=[True, False])
+        .drop_duplicates('kulturcode')
+        .set_index('kulturcode')[['Gruppe', 'year']]
+        .rename(columns={'Gruppe':'Gruppe_mostrecent', 'year':'year_mostrecentGruppe'})
+    )
+
+    # Step 7: Build final report for inspection (only inconsistent codes)
+    final_report = pivot_df.join(gruppe_concat).join(
+        most_recent[['Gruppe_mostrecent', 'year_mostrecentGruppe']]
+    )
+    final_report.to_csv(out_path, encoding='utf-8-sig')
+
+    # Cleanup
+    del all_years_df, multi_df, pivot_df
+    gc.collect()
+
+    return most_recent
+
+
+def enforce_most_recent_gruppe(new_kulturart_ha: dict, most_recent: pd.DataFrame) -> None:
+    """
+    Overwrite all Gruppe values in each year with the most recent
+    non-empty assignment from most_recent mapping.
     
-    #Replace the values in the 'Gruppe' column
-    kulturcode_map['Gruppe'] = kulturcode_map['Gruppe'].replace(gruppe_mapping)
+    We do this so that years with multiple Gruppe assignments
+    will have the most recent one applied consistently.
 
-    # Filter rows where 'Gruppe' starts with 'Küchenkräuter'
-    filtered_df = kulturcode_map[kulturcode_map['Gruppe'].str.startswith('Küchenkräuter', na=False)]
+    Parameters
+    ----------
+    new_kulturart_ha : dict
+        Dictionary of DataFrames with year as key.
+    most_recent : pd.DataFrame
+        Mapping of kulturcode to its most recent Gruppe.
+    """
+    for year, df in new_kulturart_ha.items():
+        df['Gruppe'] = df['kulturcode'].map(most_recent['Gruppe_mostrecent']).fillna('')
+        # Special case correction
+        df.loc[df['kulturcode'] == 860, 'Gruppe'] = 'Gemüse'
+    gc.collect()
 
-    # Remove the rows of the filtered DataFrame from the kulturcode_map
-    kulturcode_map = kulturcode_map.drop(filtered_df.index)
 
-    # For all of these rows in filtered_Df, let Gruppe value be 'Küchenkräuter'
-    filtered_df['Gruppe'] = 'Kräuter'
 
-    # Add the filtered DataFrame back to the kulturcode_map
-    kulturcode_map = pd.concat([kulturcode_map, filtered_df], ignore_index=True)
+# ================================
+# Step 3. Master Table
+# ================================
 
-    # get a list of all unique values in the 'Gruppe' column
-    unique_gruppe = kulturcode_map['Gruppe'].unique()
-    logging.info(unique_gruppe)
+def build_master(new_kulturart_ha: dict, years=range(2012, 2025), wide: bool = False):
+    long = pd.concat(
+        [df.assign(year=year)[['old_kulturcode', 'kulturcode', 'kulturart', 'Gruppe', 'year']] 
+         for year, df in new_kulturart_ha.items()],
+        ignore_index=True
+    )
+
+    long['old_kulturcode'] = pd.to_numeric(long['old_kulturcode'], errors='coerce').astype('Int64')
+    long['kulturcode'] = pd.to_numeric(long['kulturcode'], errors='coerce').astype('Int64')
+    long['kulturart'] = long['kulturart'].fillna('').astype('category')
+    long['Gruppe'] = long['Gruppe'].fillna('').astype('category')
+
+    all_kulturcode = long[['old_kulturcode','kulturcode']].drop_duplicates().reset_index(drop=True)
+
+    latest = (long.sort_values(['kulturcode','year'])
+                   .drop_duplicates('kulturcode', keep='last')
+                   .loc[:, ['kulturcode','kulturart','Gruppe']]
+                   .rename(columns={'kulturart':'latest_kulturart','Gruppe':'latest_Gruppe'}))
+
+    if not wide:
+        gc.collect()
+        return latest.reset_index(drop=True), all_kulturcode
+
+    # Wide mode
+    years_sorted = sorted(set(long['year'].dropna().astype(int).tolist()), reverse=True)
+
+    pivot_kulturart = (long.pivot(index='kulturcode', columns='year', values='kulturart').astype('category'))
+    pivot_gruppe    = (long.pivot(index='kulturcode', columns='year', values='Gruppe').astype('category'))
+
+    pivot_kulturart = pivot_kulturart.reindex(columns=years_sorted)
+    pivot_gruppe    = pivot_gruppe.reindex(columns=years_sorted)
+
+    pivot_kulturart.columns = [f'kulturart {y}' for y in pivot_kulturart.columns]
+    pivot_gruppe.columns    = [f'Gruppe {y}'    for y in pivot_gruppe.columns]
+
+    master = latest.set_index('kulturcode').join(pivot_kulturart, how='left').join(pivot_gruppe, how='left')
+
+    k_cols = [f'kulturart {y}' for y in years_sorted]
+    g_cols = [f'Gruppe {y}' for y in years_sorted]
+    master['latest_kulturart'] = master[k_cols].apply(lambda row: next((x for x in row if pd.notna(x) and x != ''), ''), axis=1)
+    master['latest_Gruppe']    = master[g_cols].apply(lambda row: next((x for x in row if pd.notna(x) and x != ''), ''), axis=1)
+
+    del long, pivot_kulturart, pivot_gruppe
+    gc.collect()
+
+    return master.reset_index(), all_kulturcode
+
+
+# ================================
+# Step 4. Apply Fix File
+# ================================
+
+def apply_fix(master: pd.DataFrame, all_kulturcode: pd.DataFrame, fix_path: Path):
+    kfix = pd.read_csv(fix_path, encoding='utf-8-sig').drop_duplicates('kulturcode').set_index('kulturcode')
+    kfix['take_latest'] = kfix['take_latest'].fillna(0).astype(int)
+    kfix['take_Gruppe'] = kfix['take_Gruppe'].fillna(0).astype(int)
+    kfix['new_kulturcode'] = pd.to_numeric(kfix['new_kulturcode'], errors='coerce').astype('Int64')
+
+    def get_actual(row):
+        code = row['kulturcode']
+        actual = {
+            'new_kulturart_actual': row['latest_kulturart'],
+            'Gruppe_actual': row['latest_Gruppe'],
+            'new_kulturcode_actual': code
+        }
+        if code in kfix.index:
+            fix = kfix.loc[code]
+            if fix['take_latest']:
+                actual['new_kulturart_actual'] = row['latest_kulturart']
+            elif fix['take_Gruppe']:
+                actual['new_kulturart_actual'] = row['latest_Gruppe']
+            elif pd.notna(fix['new_kulturart']):
+                actual['new_kulturart_actual'] = fix['new_kulturart']
+
+            if pd.notna(fix['new_kulturcode']):
+                actual['new_kulturcode_actual'] = int(fix['new_kulturcode'])
+        return pd.Series(actual)
+
+    master[['new_kulturart_actual','Gruppe_actual','new_kulturcode_actual']] = master.apply(get_actual, axis=1)
     
-    return kulturcode_map
 
-def retain_most_recent_kulturcode(kulturcode_map):
-    # Sort by 'kulturcode' and 'year' in descending order
-    sorted_df = kulturcode_map.sort_values(by=['kulturcode', 'year'], ascending=[True, False])
+    all_kulturcode_master = all_kulturcode.merge(
+        master[['kulturcode','new_kulturcode_actual', 'new_kulturart_actual','Gruppe_actual']],
+        on='kulturcode',
+        how='left'
+    ).drop_duplicates()
     
-    # Drop duplicates based on 'kulturcode', keeping the first occurrence
-    kulturcode_map = sorted_df.drop_duplicates(subset=['kulturcode'], keep='first')
+    # rename columns
+    all_kulturcode_master.rename(columns={
+        'kulturcode': 'int_kulturcode',
+        'new_kulturcode_actual': 'new_kulturcode',
+        'new_kulturart_actual': 'kulturart',
+        'Gruppe_actual': 'Gruppe'
+    }, inplace=True)
     
-    # rename year column to reference most_recent_year
-    kulturcode_map = kulturcode_map.rename(columns={'year': 'sourceyear'})
 
-    return kulturcode_map
-
-def fix_string(kulturcode_map):
-    # Correct multiple spaces in the 'text_column'
-    kulturcode_map['kulturart'] = kulturcode_map['kulturart'].str.replace(r'\s+', ' ', regex=True)
-    kulturcode_map['Gruppe'] = kulturcode_map['Gruppe'].str.replace(r'\s+', ' ', regex=True)
-    # Remove leading and trailing whitespaces
-    kulturcode_map['kulturart'] = kulturcode_map['kulturart'].str.strip()
-    kulturcode_map['Gruppe'] = kulturcode_map['Gruppe'].str.strip()
-    # Convert all text to lowercase
-    kulturcode_map['kulturart'] = kulturcode_map['kulturart'].str.lower()
-    kulturcode_map['Gruppe'] = kulturcode_map['Gruppe'].str.lower()
-    
-    return kulturcode_map
+    del kfix
+    gc.collect()
+    return all_kulturcode_master
 
 
-def check_kulturcode_presence(kulturcode_act, kulturcode_map):
-    dropped_codes = {}  # Initialize the dictionary to store missing kulturcodes
+# ================================
+# Step 5. Validation and final fix
+# ================================
 
-    for year, df in kulturcode_act.items():
-        if not isinstance(df, pd.DataFrame):
-            logging.warning(f"The value for year {year} is not a DataFrame.")
-            continue
-        
-        missing_kulturcodes = df[~df['kulturcode'].isin(kulturcode_map['kulturcode'])]
-        
-        if not missing_kulturcodes.empty:
-            logging.info(f"Year {year}: The following kulturcodes are missing in kulturcode_map:\n{missing_kulturcodes}")
-            # Add the year column to the missing_kulturcodes DataFrame
-            missing_kulturcodes['year'] = year
-            # Save the missing kulturcodes to the dictionary
-            dropped_codes[year] = missing_kulturcodes
+def validate_master(master: pd.DataFrame) -> None:
+    for col in ['new_kulturcode', 'kulturart', 'Gruppe']:
+        # Check for missing (NaN) or empty string values
+        missing_mask = master[col].isnull() | (master[col].astype(str).str.strip() == '')
+        if missing_mask.any():
+            print(f"⚠️ Missing or empty values detected in {col}: {missing_mask.sum()} rows")
         else:
-            logging.info(f"Year {year}: All kulturcodes are present in kulturcode_map.")
-
-    return dropped_codes
-
-def save_missing_kulturcodes_to_excel(dropped_codes):
-   output_file='reports/Kulturcode/missing_kulturcodes.xlsx'
-   with pd.ExcelWriter(output_file) as writer:
-        for year, df in dropped_codes.items():
-            # Save the missing kulturcodes to a sheet in the Excel file
-            df.to_excel(writer, sheet_name=f'Missing_{year}', index=False)
+            print(f"  No missing or empty values in {col}")
 
 
-def collect_unique_dropped_codes(dropped_codes):
-    # Initialize an empty list to store rows
-    rows = []
+def report_and_fix_missing_gruppe(all_kulturcode_master: pd.DataFrame) -> pd.DataFrame:
+    """
+    Identify all unique kulturcodes that are missing a 'Gruppe' value,
+    print their 'kulturart', and assign Gruppe if known from a predefined mapping.
 
-    # Iterate through each year and DataFrame in dropped_codes
-    for year, df in dropped_codes.items():
-        # Iterate through each row in the DataFrame
-        for _, row in df.iterrows():
-            # Append the row to the list, including the year
-            rows.append(row)
+    Parameters
+    ----------
+    all_kulturcode_master : pd.DataFrame
+        DataFrame containing at least 'new_kulturcode', 'Gruppe', and 'kulturart' columns.
 
-    # Convert the list to a DataFrame
-    unique_dropped_codes_df = pd.DataFrame(rows).drop_duplicates()
+    Returns
+    -------
+    updated_df : pd.DataFrame
+        DataFrame with missing Gruppe values filled where possible.
+    """
+    # Predefined fixes for missing Gruppe
+    missing_gruppe_fix = {
+        156: "Getreide",
+        174: "Getreide",
+        176: "Getreide",
+        342: "Ölsaaten",
+        412: "Ackerfutter",
+        690: "Hackfrüchte",
+        890: "Dauerkulturen",
+        892: "Gemüse",
+        896: "Zierpflanzen"
+    }
 
-    return unique_dropped_codes_df
+    df = all_kulturcode_master.copy()
+    df['Gruppe'] = df['Gruppe'].astype(str)
 
+    # Mask for missing Gruppe (empty or NaN)
+    missing_mask = df['Gruppe'].isna() | (df['Gruppe'].str.strip() == '')
 
-def assign_gruppe_and_kulturart(row):
-    kulturcode = row['kulturcode']
-    if kulturcode < 200:
-        row['Gruppe'] = 'getreide'
-        row['kulturart'] = 'getreide'
-    elif 200 <= kulturcode < 500:
-        row['Gruppe'] = 'ackerfutter'
-        row['kulturart'] = 'ackerfutter'
-    elif 500 <= kulturcode < 600:
-        row['Gruppe'] = 'stilllegung/aufforstung'
-        row['kulturart'] = 'stilllegung/aufforstung'
-    elif 600 <= kulturcode < 700:
-        row['Gruppe'] = 'kräuter'
-        row['kulturart'] = 'kräuter'
-    elif 700 <= kulturcode < 730:
-        row['Gruppe'] = 'andere handelsgewächse'
-        row['kulturart'] = 'andere handelsgewächse'
-    elif 730 <= kulturcode < 800:
-        row['Gruppe'] = 'zierpflanzen'
-        row['kulturart'] = 'zierpflanzen'
-    elif 800 <= kulturcode < 900:
-        row['Gruppe'] = 'dauerkulturen'
-        row['kulturart'] = 'dauerkulturen'
-    elif kulturcode >= 900:
-        row['Gruppe'] = 'sonstige flächen'
-        row['kulturart'] = 'sonstige flächen'
-        
-    return row
+    # Select unique rows with missing Gruppe
+    missing_df = df.loc[missing_mask, ['new_kulturcode', 'kulturart']].drop_duplicates()
 
-def add_codes_fromb4_15(unique_dropped_codes_df, kulturcode_map1):
-    # Assign 'Gruppe' and 'kulturart' values to dropped codes
-    unique_dropped_codes_df = unique_dropped_codes_df.apply(assign_gruppe_and_kulturart, axis=1)
+    if not missing_df.empty:
+        print("Kulturcodes missing 'Gruppe' and their 'kulturart':")
+        print(missing_df)
+    else:
+        print("No missing Gruppe values found.")
 
-    #let 'sourceyear' value for all rows be 2015 and drop year column
-    unique_dropped_codes_df['sourceyear'] = 2015
-    unique_dropped_codes_df = unique_dropped_codes_df.drop(columns='year')
-    
-    # group by 'kulturcode' and drop duplicates
-    unique_dropped_codes_df = unique_dropped_codes_df.drop_duplicates(subset='kulturcode')
-    logging.info(f"Unique dropped codes have been assigned 'Gruppe', 'kulturart' and 'sourceyear' values.")
-
-    # Merge the unique_dropped_codes_df with kulturcode_map1 on 'kulturcode' and 'year'
-    kulturcode_map2 = pd.concat([kulturcode_map1, unique_dropped_codes_df], ignore_index=True)
-    
-    return kulturcode_map2
-
-def category1(df, column_name):
-    # Define the categories that should be labeled as 'environmental'
-    environmental_categories = [
-        'stilllegung/aufforstung', 
-        'greening / landschaftselemente', 
-        'aukm', 
-        'aus der produktion genommen'
-    ]
-
-    # Create column 'category1' based on the conditions
-    df['category1'] = df[column_name].apply(
-        lambda x: 'environmental' if x in environmental_categories else 'others'
+    # Apply manual fixes if available
+    df['Gruppe'] = df.apply(
+        lambda row: missing_gruppe_fix[row['new_kulturcode']]
+        if row['new_kulturcode'] in missing_gruppe_fix else row['Gruppe'],
+        axis=1
     )
-    
+
     return df
 
-def category2(df, column_name):
-    # Define the categories that should be labeled as 'environmental'
-    environmental_categories = [
-        'stilllegung/aufforstung', 
-        'greening / landschaftselemente', 
-        'aukm', 
-        'aus der produktion genommen'
-    ]
+# ================================
+# === MAIN EXECUTION PIPELINE ===
+# ================================
+def process_kulturcode(data_main_path, load_existing=True):
     
-    sonstige_flaechen = [
-        'sonstige flächen',
-        'andere handelsgewächse',
-        'zierpflanzen',
-        'kräuter',
-        'energiepflanzen'
-    ]
-
-    leguminosen = [
-        'leguminosen',
-        'eiweißpflanzen'
-    ]
-
-    # Create column 'category2'
-    df['category2'] = df[column_name].apply(
-        lambda x: 'environmental' if x in environmental_categories \
-            else 'sonstige flächen' if x in sonstige_flaechen \
-            else 'leguminosen' if x in leguminosen \
-            else x
-    )
-    
-    return df
-
-def category3(df, column_name):
-    # categorization based on similar use of crops in reality
-    environmental_categories = [
-        'stilllegung/aufforstung', 
-        'greening / landschaftselemente', 
-        'aukm', 
-        'aus der produktion genommen'
-    ]
-    
-    ffc = [
-        'getreide',
-        'gemüse',
-        'leguminosen',
-        'eiweißpflanzen',
-        'hackfrüchte',
-        'ölsaaten',
-        'kräuter',
-        'ackerfutter'
-    ]
-        
-    others = [
-        'sonstige flächen',
-        'andere handelsgewächse',
-        'zierpflanzen',
-        'mischkultur',
-        'energiepflanzen'
-    ]
-
-    # Create column 'category2'
-    df['category3'] = df[column_name].apply(
-        lambda x: 'environmental' if x in environmental_categories \
-            else 'ffc' if x in ffc \
-            else 'others' if x in others \
-            else x
-    )
-    
-    return df
-
-def process_kulturcode():
-    # Define the path to the CSV file
-    csv_path = data_main_path+'/interim/kulturcode_mastermap.csv'
+    # Paths for reports and outputs
+    fix_path = os.path.join(data_main_path, "raw/kulturcode_fix.csv")
+    out_master = data_main_path+"/interim/kulturcode_mastermap.csv"
+    group_consistency_report_path = Path("reports/Kulturcode/inconsistent_gruppe.csv")
+    missing_codes_report_path = "reports/Kulturcode/missing_kulturcodes_report.csv"
     
     # Check if the CSV file already exists
-    if os.path.exists(csv_path):
+    if os.path.exists(out_master):
         print("Loading kulturcode_mastermap from CSV.")
-        kulturcode_mastermap = pd.read_csv(csv_path, encoding='windows-1252')
+        all_kulturcode_master = pd.read_csv(out_master, encoding='windows-1252')
     else:
-        print("Processing kulturcode_mastermap.")
-        # Load base data
-        gld = dl.load_data(loadExistingData=True)
+        print("Processing all_kulturcode_master.")
+            
+        # Step 0: Load kulturcodes and descriptions
+        kulturcode_act = get_kultucodes()    
+        kulturart = get_kulturcode_desc(data_main_path, load_existing)    
+
+        # Step 1: Harmonization
+        d_kulturart = copy_kulturart(kulturart)    #Copy original kulturart
         
-        kulturcode_act = get_uni_kulturcode(gld)
-        plot_unique_kulturcode_counts(kulturcode_act)
-        kulturart = load_kulturcode_description(data_main_path+"/raw/kulturcode/kulturart_allyears.xlsx")
-        kulturcode_map = create_kulturcode_map(kulturcode_act, kulturart)
-        kulturcode_map = map_2021_22(kulturcode_map)
-        kulturcode_map = fix_missingkulturart(kulturcode_map)
-        kulturcode_map = fix_gruppe(kulturcode_map)
-        kulturcode_map = review_groups(kulturcode_map)
-        kulturcode_map1 = retain_most_recent_kulturcode(kulturcode_map)
-        kulturcode_map1 = fix_string(kulturcode_map1)
-        dropped_codes = check_kulturcode_presence(kulturcode_act, kulturcode_map1)
-        unique_dropped_codes_df = collect_unique_dropped_codes(dropped_codes)
-        kulturcode_mastermap = add_codes_fromb4_15(unique_dropped_codes_df, kulturcode_map1)
-        check_kulturcode_presence(kulturcode_act, kulturcode_mastermap)
-        kulturcode_mastermap = category1(kulturcode_mastermap, 'Gruppe')
-        kulturcode_mastermap = category2(kulturcode_mastermap, 'Gruppe')
-        kulturcode_mastermap = category3(kulturcode_mastermap, 'Gruppe')
+        ## fix for 2024
+        manual_fixes_2024 = {888: "AUKM", 885: "AUKM"}
+        d_kulturart, missing = fill_gruppe_backwards(d_kulturart, 2024, manual_fixes=manual_fixes_2024)
         
-        # Save to CSV
-        kulturcode_mastermap.to_csv(csv_path, encoding='windows-1252', index=False)
-    
-    return kulturcode_mastermap
+        apply_gruppe_mapping(d_kulturart)
+        special_map = {
+            602: [611,612,613,614,615,619],
+            603: [620],
+            701: [793],
+            715: list(range(710,716)),
+            815: list(range(812,820)),
+            833: [824],
+            834: [825],
+            838: [830],
+            839: [831],
+            860: [715],
+            983: [846]
+        }
+        apply_special_mappings(d_kulturart, special_map)
+        new_kulturart_ha = apply_range_mapping(d_kulturart)
+
+        # Step 2: Multi-Gruppe Handling
+        most_recent_mapping = build_inconsistent_report(new_kulturart_ha, group_consistency_report_path)
+        enforce_most_recent_gruppe(new_kulturart_ha, most_recent_mapping)
+        
+        # Step 3: Build master
+        kulturcode_master, all_kulturcode = build_master(new_kulturart_ha, wide=False)
+
+        # Step 4: Apply fix
+        all_kulturcode_master = apply_fix(kulturcode_master, all_kulturcode, fix_path)
+
+        # Step 5: Validate and fix
+        validate_master(all_kulturcode_master)
+        all_kulturcode_master = report_and_fix_missing_gruppe(all_kulturcode_master)
+
+
+        # Save final outputs   
+        all_kulturcode_master.to_csv(out_master, index=False, encoding="utf-8-sig")
+        print(f" Final master DataFrame saved to {out_master}")
+
+        # Missing codes check
+        missing_codes_report = {}
+        master_codes = set(all_kulturcode_master['old_kulturcode'])
+        for year, df in kulturcode_act.items():
+            if isinstance(df, (list, tuple, np.ndarray)):
+                df = pd.DataFrame(df)
+            if 'kulturcode' not in df.columns:
+                print(f"⚠️ Year {year} missing 'kulturcode' column.")
+                continue
+            df_codes = set(df['kulturcode'].dropna())
+            missing = df_codes - master_codes
+            if missing:
+                missing_codes_report[year] = missing
+                print(f"Year {year}: {len(missing)} missing codes")
+            else:
+                print(f"Year {year}: no missing codes")
+
+        with open(missing_codes_report_path, "w", encoding="utf-8-sig") as f:
+            f.write("year,missing_kulturcode\n")
+            for year, missing_codes in missing_codes_report.items():
+                for code in missing_codes:
+                    f.write(f"{year},{code}\n")
+        print(f"\n Missing codes report saved to {missing_codes_report_path}")
+        
+
+    return all_kulturcode_master
 
 # %%
 if __name__ == '__main__':
-   kulturcode_mastermap = process_kulturcode()
+   kulturcode_master = process_kulturcode(data_main_path, load_existing=True)
+
+
 # %%

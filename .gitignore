@@ -152,16 +152,18 @@ cython_debug/
 #.idea/
 
 
-# Niedersachsen ignores
+# Ignores
 # Ignore data and report folder in main
 # Ignore everything in data/
 data/*
-
-# Except data/raw/kulturcode/ and its contents
+# Except data/raw/nieder_origin/kulturcodes/ and its contents
 !data/raw/
+
+# Ignore everything in data/raw/
 data/raw/*
-!data/raw/kulturcode/
-!data/raw/kulturcode/**
+
+# Except data/raw/nieder_origin/
+!data/raw/kulturcode_fix.csv
 
 # Optionally, keep .gitkeep if you want empty folders tracked
 !data/.gitkeep
