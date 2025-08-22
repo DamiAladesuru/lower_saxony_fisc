@@ -57,7 +57,7 @@ pm.multiline_metrics(
     ylabel="Aggregate Change (%) in Field Metric Value from 2012",
     metrics=metrics,
     format='svg',
-    save_path="reports/figures/test_trends.svg",
+    save_path="reports/figures/aggregate_line_trends.svg",
     color_mapping=color_mapping
 )
 

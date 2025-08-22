@@ -51,8 +51,12 @@ for key, df in data.items():
 for year in sorted(data):
     if 'area' in data[year].columns:
         print(f"{year}: Total area = {data[year]['area'].sum():,.2f}")
-        
 
+# --- Print total number of observations in each year
+for year in sorted(data):
+    print(f"{year}: Total observations = {len(data[year])}")
+    
+    
 # %%
 '''
 we can plot these values to see how the area changes over the years

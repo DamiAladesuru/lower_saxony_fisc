@@ -22,9 +22,8 @@ project_root=os.getcwd()
 data_main_path=open(project_root+"/datapath.txt").read()
 
 
-
-
-from src.analysis.desc import gld_desc_raw as gdr
+from src.data import dataload as dl
+from src.data import eca_new as eca
 
 ''' This script contains functions for:
     - modifying gld to include columns for basic additional metrics and kulturcode descriptions.
@@ -35,6 +34,36 @@ The functions are called in the trend_of_fisc script
 
 
 # %% A.
+def load_geodata():
+    gld_paths = dl.load_data(loadExistingData=True)
+    kulturcode_mastermap = eca.process_kulturcode(data_main_path, load_existing=True)
+            
+    years = range(2012, 2025)
+    gld_allyears = {}  # Will store year → GeodataFrame of data
+
+    for year in years:
+        # Load the gld data for the current year
+        gld_path = gld_paths[year]
+        gld = gpd.read_parquet(gld_path)
+        print(f"{year}: CRS of data: EPSG:{gld.crs.to_epsg()}")
+            
+        # merge gld on 'kulturcode' with kulturcode_mastermap on 'old_kulturcode'
+        gld = gld.rename(columns={'kulturcode': 'old_kulturcode'})
+        gld = gld.merge(kulturcode_mastermap, on='old_kulturcode', how='left')
+        # drop 'int_kulturcode' and rename 'old_kulturcode' to 'kulturcode'
+        gld = gld.drop(columns=['old_kulturcode','int_kulturcode'])
+        gld = gld.rename(columns={'new_kulturcode': 'kulturcode'})
+        
+        # Apply threshold of minimum 100m2 fields
+        gld = gld[~(gld['area_m2'] < 100)]
+        print(f"updated {year} data")
+    
+    # save the gld data to a dictionary
+        gld_allyears[year] = gld
+
+    return gld_allyears
+
+
 def create_griddf(gld):
     """
     Create a griddf GeodataFrame with aggregated statistics that summarize field data.
@@ -222,6 +251,7 @@ def process_griddf(gld_ext):
 
     return gridgdf
 
+# %%
 def create_gridgdf():
     output_dir = data_main_path+'/interim/gridgdf'
     if not os.path.exists(output_dir):
@@ -230,15 +260,23 @@ def create_gridgdf():
     # Dynamically refer to filename based on parameters
     gridgdf_filename = os.path.join(output_dir, 'gridgdf.pkl')
 
-    # Load gld
-    gld_ext = gdr.adjust_gld()
+    # load the geodata for all years
+    gld_allyears = load_geodata()
 
     if os.path.exists(gridgdf_filename):
         gridgdf = pd.read_pickle(gridgdf_filename)
         print(f"Loaded gridgdf from {gridgdf_filename}")
     else:
-        griddf = create_griddf(gld_ext)
-        dupli = check_duplicates(griddf)
+        # create a griddf for each year
+        griddf_allyears = {}
+        for key, gld in gld_allyears.items():
+            griddf_yearly = create_griddf(gld)
+            check_duplicates(griddf_yearly)
+            griddf_allyears[key] = griddf_yearly
+            
+        # put all years' griddfs into one dataframe
+        griddf = pd.concat(griddf_allyears.values(), ignore_index=True)
+
         # calculate differences
         griddf_ydiff = calculate_yearlydiff(griddf)
         griddf_exty1 = calculate_diff_fromy1(griddf)
@@ -260,7 +298,7 @@ def create_gridgdf():
         gridgdf.to_pickle(gridgdf_filename)
         print(f"Saved gridgdf to {gridgdf_filename}")
 
-    return gld_ext, gridgdf
+    return gld_allyears, gridgdf
 
 # %% drop gridgdf outliers i.e., grids which have  fields < 300
 # but only if all fields < 300 for all years in which the grid is in the dataset
@@ -424,4 +462,5 @@ def silence_prints(func, *args, **kwargs):
         return func(*args, **kwargs)  # Call the function without print outputs
 ######################################################################################
 
+# %%
 
