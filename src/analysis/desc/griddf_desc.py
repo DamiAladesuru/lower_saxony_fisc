@@ -1,7 +1,7 @@
 # %%
 import pandas as pd
 import geopandas as gpd
-import os
+import os, gc
 import logging
 import numpy as np
 import pickle
@@ -60,6 +60,10 @@ def load_geodata():
     
     # save the gld data to a dictionary
         gld_allyears[year] = gld
+        
+    # Clean up memory
+    del gld, kulturcode_mastermap
+    gc.collect()
 
     return gld_allyears
 
@@ -270,6 +274,10 @@ def create_fullgriddf():
         griddf = griddf_ext
         griddf.to_parquet(griddf_filename)
         print(f"Saved griddf to {griddf_filename}")
+    
+    # clean up memory
+    del gld_allyears, griddf_allyears, griddf_base, griddf_ydiff, griddf_exty1, griddf_ext
+    gc.collect()
 
     return gld_allyears, griddf
 
@@ -318,6 +326,10 @@ def clean_griddf(griddf):
     griddf_cl = griddf_cl[~griddf_cl['LANDKREIS'].isin(["Küstenmeer Region Lüneburg", "Küstenmeer Region Weser-Ems"])]
     
     logging.info(f"Final cleaned griddf shape: {griddf_cl.shape}")
+    
+    # clean up memory
+    del griddf, griddf_clean, outliers, griddf_unique, outliers_unique, merged_outliers, unmatched_outliers, unmatched_outlier_codes, unmatched_outliers_df, final_cleaned_griddf, final_outliers
+    gc.collect()
 
     return griddf_cl, final_outliers
 
