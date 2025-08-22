@@ -276,7 +276,7 @@ def create_fullgriddf():
         print(f"Saved griddf to {griddf_filename}")
     
     # clean up memory
-    del gld_allyears, griddf_allyears, griddf_base, griddf_ydiff, griddf_exty1, griddf_ext
+    del griddf_allyears, griddf_base, griddf_ydiff, griddf_exty1, griddf_ext
     gc.collect()
 
     return gld_allyears, griddf
