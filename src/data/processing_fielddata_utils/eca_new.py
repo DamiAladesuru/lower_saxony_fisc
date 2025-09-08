@@ -10,12 +10,12 @@ import geopandas as gpd
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-from src.data import dataload as dl
+from src.data.processing_fielddata_utils import dataload as dl
 
 # Set up the project root directory
 current_path = Path(__file__).resolve().parent
 for parent in [current_path] + list(current_path.parents):
-    if parent.name == "lower_saxony_fisc":
+    if parent.name == "lower_saxony_fisc": # or workspace if not lower_saxony_fisc
         os.chdir(parent)
         print(f"Changed working directory to: {parent}")
         break

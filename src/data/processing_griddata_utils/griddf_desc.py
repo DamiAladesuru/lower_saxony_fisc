@@ -1,7 +1,7 @@
 # %%
 import pandas as pd
 import geopandas as gpd
-import os
+import os, gc
 import logging
 import numpy as np
 import pickle
@@ -14,7 +14,7 @@ from pathlib import Path
 current_path = Path(__file__).resolve().parent
 for parent in [current_path] + list(current_path.parents):
 
-    if parent.name == "lower_saxony_fisc":
+    if parent.name == "lower_saxony_fisc": # lower_saxony_fisc or workspace
         os.chdir(parent)
         print(f"Changed working directory to: {parent}")
         break
@@ -22,62 +22,30 @@ project_root=os.getcwd()
 data_main_path=open(project_root+"/datapath.txt").read()
 
 
-from src.data import dataload as dl
-from src.data import eca_new as eca
+from src.data.processing_fielddata_utils import field_dataset as fd
 
 ''' This script contains functions for:
-    - modifying gld to include columns for basic additional metrics and kulturcode descriptions.
-    - creating griddf and gridgdf (without removing any assumed outlier and for subsamples).
-    - computing descriptive statistics for gridgdf.
-The functions are called in the trend_of_fisc script
+    - modifying gld to contain kulturcode descriptions.
+    - creating griddf and clean griddf (having removed assumed outliers).
+    - computing descriptive statistics for griddf.
 '''
 
 
-# %% A.
-def load_geodata():
-    gld_paths = dl.load_data(loadExistingData=True)
-    kulturcode_mastermap = eca.process_kulturcode(data_main_path, load_existing=True)
-            
-    years = range(2012, 2025)
-    gld_allyears = {}  # Will store year → GeodataFrame of data
-
-    for year in years:
-        # Load the gld data for the current year
-        gld_path = gld_paths[year]
-        gld = gpd.read_parquet(gld_path)
-        print(f"{year}: CRS of data: EPSG:{gld.crs.to_epsg()}")
-            
-        # merge gld on 'kulturcode' with kulturcode_mastermap on 'old_kulturcode'
-        gld = gld.rename(columns={'kulturcode': 'old_kulturcode'})
-        gld = gld.merge(kulturcode_mastermap, on='old_kulturcode', how='left')
-        # drop 'int_kulturcode' and rename 'old_kulturcode' to 'kulturcode'
-        gld = gld.drop(columns=['old_kulturcode','int_kulturcode'])
-        gld = gld.rename(columns={'new_kulturcode': 'kulturcode'})
-        
-        # Apply threshold of minimum 100m2 fields
-        gld = gld[~(gld['area_m2'] < 100)]
-        print(f"updated {year} data")
-    
-    # save the gld data to a dictionary
-        gld_allyears[year] = gld
-
-    return gld_allyears
-
-
-def create_griddf(gld):
+# %% B. Creating griddf
+def create_griddf_base(gld):
     """
-    Create a griddf GeodataFrame with aggregated statistics that summarize field data.
+    Create a griddf dataFrame with aggregated statistics that summarize field data.
 
     Parameters:
-    gld (geodataFrame): Input geodataFrame with columns ['CELLCODE', 'year', 'LANDKREIS'] 
+    gld (dataFrame): Input dataFrame with columns ['CELLCODE', 'year', 'LANDKREIS'] 
                         and additional numeric columns for aggregation.
 
     Returns:
-    A  geoDataFrame with unique CELLCODE, year, and LANDKREIS rows,
+    A  DataFrame with unique CELLCODE, year, and LANDKREIS rows,
                   enriched with aggregated fields.
     """
     
-    required_columns = ['CELLCODE', 'year', 'LANDKREIS', 'geometry',\
+    required_columns = ['CELLCODE', 'year', 'LANDKREIS', 'row_id',\
         'Gruppe', 'area_m2', 'area_ha', 'peri_m', 'shape']
     missing = [col for col in required_columns if col not in gld.columns]
     if missing:
@@ -98,7 +66,7 @@ def create_griddf(gld):
 
     # Define aggregations
     aggregations = [
-        {'column': 'geometry', 'aggfunc': 'count', 'new_col': 'fields'},
+        {'column': 'row_id', 'aggfunc': 'count', 'new_col': 'fields'},
         {'column': 'Gruppe', 'aggfunc': 'nunique', 'new_col': 'group_count'},
         {'column': 'area_m2', 'aggfunc': 'sum', 'new_col': 'fsm2_sum'},
         {'column': 'area_ha', 'aggfunc': 'sum', 'new_col': 'fsha_sum'},
@@ -209,10 +177,10 @@ def combine_griddfs(griddf_ext, griddf_exty1):
 def to_gdf(griddf_ext):
     # Load Germany grid_landkreise to obtain the geometry
     with open(data_main_path+'/interim/grid_landkreise.pkl', 'rb') as f:
-        geom = pickle.load(f)
-    geom.info()
+        grid_geoms = pickle.load(f)
+    grid_geoms.info()
     
-    gridgdf = griddf_ext.merge(geom, on='CELLCODE')
+    gridgdf = griddf_ext.merge(grid_geoms, on='CELLCODE')
     # Convert the DataFrame to a GeoDataFrame
     gridgdf = gpd.GeoDataFrame(gridgdf, geometry='geometry')
     # Dropping the 'LANDKREIS_y' column and rename LANDKREIS_x
@@ -220,66 +188,44 @@ def to_gdf(griddf_ext):
     gridgdf.rename(columns={'LANDKREIS_x': 'LANDKREIS'}, inplace=True)
 
     
-    return gridgdf
-
-def process_griddf(gld_ext):
-    '''a function that combines all the functions above to create a gridgdf
-    in the next function, I have simply individually called each function
-    but this combined functionality is easier to call in other scripts
-    e.g., for creating landkreis or crop group subsamples
-    '''
-    griddf = create_griddf(gld_ext)
-    dupli = check_duplicates(griddf)
-    # calculate differences
-    griddf_ydiff = calculate_yearlydiff(griddf)
-    griddf_exty1 = calculate_diff_fromy1(griddf)
-    griddf_ext = combine_griddfs(griddf_ydiff, griddf_exty1)
-    
-    # Check for infinite values in all columns
-    for column in griddf_ext.columns:
-        infinite_values = griddf_ext[column].isin([np.inf, -np.inf])
-        print(f"Infinite values present in {column}:", infinite_values.any())
-
-        # Optionally, print the rows with infinite values
-        if infinite_values.any():
-            print(f"Rows with infinite values in {column}:")
-            print(griddf_ext[infinite_values])
-
-        # Handle infinite values by replacing them with NaN
-        griddf_ext[column].replace([np.inf, -np.inf], np.nan, inplace=True)
-    gridgdf = to_gdf(griddf_ext)
-
-    return gridgdf
+    return grid_geoms, gridgdf
 
 # %%
-def create_gridgdf():
+def create_fullgriddf():
     output_dir = data_main_path+'/interim/gridgdf'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
     # Dynamically refer to filename based on parameters
-    gridgdf_filename = os.path.join(output_dir, 'gridgdf.pkl')
+    griddf_filename = os.path.join(output_dir, 'griddf.parquet')
 
-    # load the geodata for all years
-    gld_allyears = load_geodata()
-
-    if os.path.exists(gridgdf_filename):
-        gridgdf = pd.read_pickle(gridgdf_filename)
-        print(f"Loaded gridgdf from {gridgdf_filename}")
+    
+    if os.path.exists(griddf_filename):
+        griddf = pd.read_parquet(griddf_filename)
+        print(f"Loaded griddf from {griddf_filename}")
     else:
-        # create a griddf for each year
+        # Use already-defined gld_no_geom if available, otherwise load it
+        if "gld_no_geom" in globals():
+            print("Using preloaded gld_no_geom")
+            gld_no_geom = globals()["gld_no_geom"]
+        else:
+            print("Loading gld_no_geom with get_gld_nogeoms()")
+            gld_no_geom = fd.get_gld_nogeoms()
+
+        
+        # create a griddf_base for each year        
         griddf_allyears = {}
-        for key, gld in gld_allyears.items():
-            griddf_yearly = create_griddf(gld)
+        for key, gld in gld_no_geom.items():
+            griddf_yearly = create_griddf_base(gld)
             check_duplicates(griddf_yearly)
             griddf_allyears[key] = griddf_yearly
             
         # put all years' griddfs into one dataframe
-        griddf = pd.concat(griddf_allyears.values(), ignore_index=True)
+        griddf_base = pd.concat(griddf_allyears.values(), ignore_index=True)
 
         # calculate differences
-        griddf_ydiff = calculate_yearlydiff(griddf)
-        griddf_exty1 = calculate_diff_fromy1(griddf)
+        griddf_ydiff = calculate_yearlydiff(griddf_base)
+        griddf_exty1 = calculate_diff_fromy1(griddf_base)
         griddf_ext = combine_griddfs(griddf_ydiff, griddf_exty1)
         
         # Check for infinite values in all columns
@@ -294,34 +240,40 @@ def create_gridgdf():
 
             # Handle infinite values by replacing them with NaN
             griddf_ext[column].replace([np.inf, -np.inf], np.nan, inplace=True)
-        gridgdf = to_gdf(griddf_ext)
-        gridgdf.to_pickle(gridgdf_filename)
-        print(f"Saved gridgdf to {gridgdf_filename}")
+        
+        # rename griddf_ext to griddf
+        griddf = griddf_ext
+        griddf.to_parquet(griddf_filename)
+        print(f"Saved griddf to {griddf_filename}")
+    
+        # clean up memory
+        del gld_no_geom, griddf_allyears, griddf_base, griddf_ydiff, griddf_exty1, griddf_ext
+        gc.collect()
 
-    return gld_allyears, gridgdf
+    return griddf
 
-# %% drop gridgdf outliers i.e., grids which have  fields < 300
+# %% drop griddf outliers i.e., grids which have  fields < 300
 # but only if all fields < 300 for all years in which the grid is in the dataset
-def clean_gridgdf(gridgdf):
+def clean_griddf(griddf):
     # Remove grids with fields < 300
-    gridgdf_clean = gridgdf[~(gridgdf['fields'] < 300)]
-    outliers = gridgdf[gridgdf['fields'] < 300]
+    griddf_clean = griddf[~(griddf['fields'] < 300)]
+    outliers = griddf[griddf['fields'] < 300]
     # Log the count of unique values of 'CELLCODE' in the outliers
     logging.info(f"Unique CELLCODES with fields < 300: {outliers['CELLCODE'].nunique()}")
 
     # Step 2: Create a DataFrame for unique CELLCODES
-    # and total count of years for unique CELLOCODES in gridgdf and outliers
-    gridgdf_unique = gridgdf.groupby('CELLCODE').agg(total_occurrence=('year', 'count')).reset_index()
+    # and total count of years for unique CELLOCODES in griddf and outliers
+    griddf_unique = griddf.groupby('CELLCODE').agg(total_occurrence=('year', 'count')).reset_index()
     outliers_unique = outliers.groupby('CELLCODE').agg(total_occurrence=('year', 'count')).reset_index()
 
     # Step 3: Add a column to check if occurrences match
     merged_outliers = outliers_unique.merge(
-        gridgdf_unique, 
+        griddf_unique, 
         on='CELLCODE', 
-        suffixes=('_outliers', '_gridgdf'),
+        suffixes=('_outliers', '_griddf'),
         how='left'
     )
-    merged_outliers['all_years_in_data'] = merged_outliers['total_occurrence_outliers'] == merged_outliers['total_occurrence_gridgdf']
+    merged_outliers['all_years_in_data'] = merged_outliers['total_occurrence_outliers'] == merged_outliers['total_occurrence_griddf']
 
     # Step 4: Filter out rows where 'all_years_in_data' is no
     unmatched_outliers = merged_outliers[merged_outliers['all_years_in_data'] == False]
@@ -330,31 +282,32 @@ def clean_gridgdf(gridgdf):
     unmatched_outlier_codes = unmatched_outliers['CELLCODE']
     unmatched_outliers_df = outliers[outliers['CELLCODE'].isin(unmatched_outlier_codes)]
 
-    # Step 6: Join these rows to gridgdf_clean
-    final_cleaned_gridgdf = pd.concat([gridgdf_clean, unmatched_outliers_df], ignore_index=True)
+    # Step 6: Join these rows to griddf_clean
+    final_cleaned_griddf = pd.concat([griddf_clean, unmatched_outliers_df], ignore_index=True)
     
     # Step 7: Create a final outliers DataFrame without the unmatched CELLCODES
     final_outliers = outliers[~(outliers['CELLCODE'].isin(unmatched_outlier_codes))]
     
     # Step 8: Drop rows with specific CELLCODEs and LANDKREIS
-    # drop gridgdf_cl rows where ['CELLCODE'].isin(['10kmE431N333', '10kmE431N334'])
-    gridgdf_cl = final_cleaned_gridgdf.copy()
-    gridgdf_cl = gridgdf_cl[~gridgdf_cl['CELLCODE'].isin(['10kmE431N333', '10kmE431N334'])]
+    # drop griddf_cl rows where ['CELLCODE'].isin(['10kmE431N333', '10kmE431N334'])
+    griddf_cl = final_cleaned_griddf.copy()
+    griddf_cl = griddf_cl[~griddf_cl['CELLCODE'].isin(['10kmE431N333', '10kmE431N334', '10kmE435N317', '10kmE436N317'])]
     
-    # drop gridgdf_cl rows where ['LANDKREIS'].isin(['Küstenmeer Region Lüneburg', 'Küstenmeer Region Weser-Ems'])
-    gridgdf_cl = gridgdf_cl[~gridgdf_cl['LANDKREIS'].isin(["Küstenmeer Region Lüneburg", "Küstenmeer Region Weser-Ems"])]
+    # drop griddf_cl rows where ['LANDKREIS'].isin(['Küstenmeer Region Lüneburg', 'Küstenmeer Region Weser-Ems'])
+    griddf_cl = griddf_cl[~griddf_cl['LANDKREIS'].isin(["Küstenmeer Region Lüneburg", "Küstenmeer Region Weser-Ems"])]
     
-    logging.info(f"Final cleaned gridgdf shape: {gridgdf_cl.shape}")
+    logging.info(f"Final cleaned griddf shape: {griddf_cl.shape}")
+   
 
-    return gridgdf_cl, final_outliers
+    return griddf_cl, final_outliers
 
 # %% B.
 #########################################################################
-# compute mean and median for columns in gridgdf. save the results to a csv file
-def desc_grid(gridgdf):
-    def compute_grid_allyear_stats(gridgdf):
+# compute mean and median for columns in griddf. save the results to a csv file
+def desc_grid(griddf):
+    def compute_grid_allyear_stats(griddf):
         # 1. Compute general all year data descriptive statistics
-        grid_allyears_stats = gridgdf.select_dtypes(include='number').describe()
+        grid_allyears_stats = griddf.select_dtypes(include='number').describe()
         # Add a column to indicate the type of statistic
         grid_allyears_stats['statistic'] = grid_allyears_stats.index
         # Reorder columns to place 'statistic' at the front
@@ -370,11 +323,11 @@ def desc_grid(gridgdf):
             print(f"Saved gen_stats to {filename}")
         
         return grid_allyears_stats
-    grid_allyears_stats = compute_grid_allyear_stats(gridgdf)
+    grid_allyears_stats = compute_grid_allyear_stats(griddf)
     
-    def compute_grid_year_average(gridgdf):
+    def compute_grid_year_average(griddf):
         # 2. Group by 'year' and calculate useful stats across grids
-        grid_yearly_stats = gridgdf.groupby('year').agg(
+        grid_yearly_stats = griddf.groupby('year').agg(
             fields_sum=('fields', 'sum'),
             fields_mean=('fields', 'mean'),
             fields_std = ('fields', 'std'),
@@ -451,7 +404,7 @@ def desc_grid(gridgdf):
         ).reset_index()
             
         return grid_yearly_stats
-    grid_yearly_stats = compute_grid_year_average(gridgdf)
+    grid_yearly_stats = compute_grid_year_average(griddf)
 
     return grid_allyears_stats, grid_yearly_stats
 
@@ -461,6 +414,4 @@ def silence_prints(func, *args, **kwargs):
     with io.StringIO() as f, contextlib.redirect_stdout(f):
         return func(*args, **kwargs)  # Call the function without print outputs
 ######################################################################################
-
-# %%
 

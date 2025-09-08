@@ -8,16 +8,17 @@ import math as m
 import tempfile
 import logging
 import gc
+import string
 from pathlib import Path
 from typing import List, Union
-from src.data import gridregionjoin
+from src.data.processing_fielddata_utils import gridregionjoin
 
 
 # Set up the project root directory
 current_path = Path(__file__).resolve().parent
 for parent in [current_path] + list(current_path.parents):
 
-    if parent.name == "lower_saxony_fisc":
+    if parent.name == "lower_saxony_fisc": # or workspace if not lower_saxony_fisc
         os.chdir(parent)
         print(f"Changed working directory to: {parent}")
         break
@@ -27,13 +28,10 @@ data_main_path=open(project_root+"/datapath.txt").read()
 print("Current working dir:", project_root)
 
 
-#this script loads the 2012 - 2023 niedersacsen data, filters with landesflaeche shapefile to remove areas outside of niedersacsen boundaries,
+#this script loads the 2012 - 2024 niedersacsen data, filters with landesflaeche shapefile to remove areas outside of niedersacsen boundaries,
 #spatially joins all years with regional information (kreise) and eea reference 10km grid, and prepares it for analysis.
-#the original data extracted from original zip and some renamed for looping can be found in N:\ds\data\Niedersachsen\Niedersachsen\Needed
-#the land and kreise data in N:\ds\data\Niedersachsen\verwaltungseinheiten
-#eea reference data in /data/raw of the current project directory
 
-'''Simply run this script and the processed data will be saved as a pickle file – data/interim/gld_base_ori.pkl.'''
+'''Simply run this script and the processed data will be saved as a parquet files for each year – data/interim/gld_per_year.'''
 
 # Initialize logging
 # #note that time is displayed in utc by devcontainer default
@@ -45,14 +43,11 @@ logger = logging.getLogger(__name__)
 logging.info("Logging works!")
 
 #######################Utility functions#########################
-# functions for geometric measures
-def paratio(p, a):
-    return p/a
-
+# Function for shape metric
 def shapeindex(p, a):
     return (0.282*p)/(m.sqrt(a))
 
-# Functions to download zip files from given URLs and load data
+# Functions to download zip files from given URLs and load raw data
 def download_zip_files(urls, schlaege_dir):
     """
     Downloads each zip file from the provided URLs into schlaege_dir,
@@ -123,7 +118,7 @@ def normalize_data_info(data_info: List[Union[list, dict]]):
     return normalized
 
 
-def load_geodata(base_dir: str, data_info: list) -> dict:
+def load_rawdata(base_dir: str, data_info: list) -> dict:
     """
     Loads geodata for all shapefiles listed in data_info from zipped archives.
 
@@ -240,6 +235,44 @@ def first_index_reset(data, years):
         logging.info(f"{year}: Index has been reset.")
     return data
 
+def add_row_id(data: dict) -> dict:
+    """
+    Add unique row_id to each dataframe in data.
+    Each year gets a letter (A=2012, B=2013, ...).
+    row_id = <Letter><row_index>
+    """
+    new_dict = {}
+    years = sorted(data.keys())
+    letters = string.ascii_uppercase  # ['A', 'B', 'C', ...]
+
+    for i, year in enumerate(years):
+        df = data[year].copy()
+        letter = letters[i]
+        df["row_id"] = df.index.map(lambda idx: f"{letter}{idx}")
+        new_dict[year] = df
+    
+    return new_dict
+
+def check_duplicate_row_ids(data: dict) -> None:
+    """
+    Check for duplicate row_id values across all years' DataFrames.
+    Prints duplicates if found.
+    """
+    # Collect all row_ids across years
+    all_ids = []
+    for year, df in data.items():
+        if "row_id" not in df.columns:
+            raise ValueError(f"'row_id' column missing in year {year}")
+        all_ids.extend(df["row_id"].tolist())
+    
+    # Find duplicates
+    duplicates = pd.Series(all_ids)[pd.Series(all_ids).duplicated()].unique()
+    
+    if len(duplicates) > 0:
+        logging.info("⚠️ Duplicate row_id(s) found:", duplicates)
+    else:
+        logging.info("✅ No duplicate row_id found across all years.")
+
 def calculate_geometric_measures(all_years):
     all_years['area_m2'] = all_years.area
     all_years['area_ha'] = all_years['area_m2'] * (1/10000)
@@ -273,7 +306,7 @@ def process_and_save_years(data, years, land, out_dir, use_wkb_fallback=False, c
 
         # 2. Duplicate check
         dup_count = gdf[["year", "id"]].duplicated().sum() if "id" in gdf.columns else 0
-        logging.info(f"{year}: {dup_count} duplicates found after join.")
+        logging.info(f"{year}: {dup_count} duplicates found after land join.")
 
         # 3. Drop temp columns if they exist
         drop_cols = [col for col in ['id', 'index_right', 'LAND'] if col in gdf.columns]
@@ -313,44 +346,70 @@ def spatial_join_with_gridregion(gdf, grid_landkreise):
     return gdf_landkreise
 
 def handle_grid_duplicates(gdf_landkreise, grid_landkreise):
-
-    # Step 1: Identify duplicate entries based on the 'id' column
-    duplicates = gdf_landkreise.duplicated('id')
-    print(f"Number of duplicate entries found: {duplicates.sum()}")  # Display the number of duplicates
-
-    if duplicates.any():
-        # Step 2: Create a DataFrame containing only the double-assigned polygons
-        double = gdf_landkreise[gdf_landkreise.index.isin(
-            gdf_landkreise[gdf_landkreise.index.duplicated()].index
-        )]
-
-        # Step 3: Remove these double-assigned polygons from the original DataFrame
-        gdf_landkreise = gdf_landkreise[~gdf_landkreise.index.isin(
-            gdf_landkreise[gdf_landkreise.index.duplicated()].index
-        )]
-
-        # Step 4: Calculate the intersection area for each polygon in 'double'
-        doublecopy = double.copy()
-        doublecopy['intersection'] = [
-            a.intersection(grid_landkreise[grid_landkreise.index == b].geometry.values[0]).area / 10000
-            for a, b in zip(doublecopy.geometry.values, doublecopy.index_right)
-        ]
-
-        # Step 5: Sort by intersection area and keep the row with the largest intersection for each 'id'
-        doublesorted = (doublecopy.sort_values(by='intersection').groupby('id', group_keys=False)
-                        .apply(lambda g: g.tail(1)).reset_index(drop=True))
-
-        # Step 6: Merge the cleaned double-assigned polygons back into the main DataFrame
-        gdf_regions = pd.concat([gdf_landkreise, doublesorted])
+    """
+    Remove duplicate row_ids after spatial join by keeping the row
+    with the largest intersection with the corresponding grid region.
+    
+    Parameters
+    ----------
+    gdf_landkreise : GeoDataFrame
+        Result of spatial join.
+    grid_landkreise : GeoDataFrame
+        Grid region layer.
         
-        # Step 7: recheck for duplicates
-        duplicates_after = gdf_regions.duplicated('id')
-        print(f"Number of duplicate entries after handling: {duplicates_after.sum()}")  #
+    Returns
+    -------
+    GeoDataFrame
+        Cleaned GeoDataFrame with unique row_id.
+    """
+    # Ensure grid_landkreise index is sequential to match sjoin index_right
+    grid_landkreise = grid_landkreise.reset_index(drop=True)
 
-        return gdf_regions
-    else:
-        print("No duplicates found. Returning the original DataFrame.")
+    # Identify duplicated row_ids
+    duplicated_ids = gdf_landkreise.loc[gdf_landkreise.duplicated('row_id', keep=False), 'row_id'].unique()
+
+    if len(duplicated_ids) == 0:
+        # No duplicates, return original
         return gdf_landkreise
+
+    # Separate unique rows and duplicates
+    unique_rows = gdf_landkreise[~gdf_landkreise['row_id'].isin(duplicated_ids)]
+    duplicate_rows = gdf_landkreise[gdf_landkreise['row_id'].isin(duplicated_ids)].copy()
+
+    # Compute intersection with corresponding grid region
+    intersection_areas = []
+    for geom, idx_right in zip(duplicate_rows.geometry.values, duplicate_rows.index_right):
+        try:
+            grid_geom = grid_landkreise.geometry.iloc[idx_right]
+            area_ha = geom.intersection(grid_geom).area / 10000
+        except Exception:
+            # fallback if intersection fails
+            area_ha = 0
+        intersection_areas.append(area_ha)
+    
+    duplicate_rows['intersection'] = intersection_areas
+
+    # Keep the row with the largest intersection per row_id
+    best_duplicates = (duplicate_rows
+                       .sort_values('intersection', ascending=False)
+                       .groupby('row_id', group_keys=False)
+                       .first()
+                       .reset_index())
+
+    # Concatenate unique rows and best duplicates
+    gdf_clean = pd.concat([unique_rows, best_duplicates], ignore_index=True)
+
+    # Final check to remove any remaining duplicates
+    gdf_clean = gdf_clean.drop_duplicates('row_id', keep='first')
+
+    # Sanity check
+    n_dups = gdf_clean.duplicated('row_id').sum()
+    if n_dups > 0:
+        print(f"⚠️ Warning: {n_dups} duplicate row_ids remain!")
+    else:
+        print("✅ No duplicate row_ids remain after handling.")
+
+    return gdf_clean
 
 # final function to load and process data
 def load_data(loadExistingData=False):
@@ -467,10 +526,12 @@ def load_data(loadExistingData=False):
         
         # Step 1: Download and load
         download_zip_files(urls, schlaege_dir)
-        data = load_geodata(schlaege_dir, data_info)
+        data = load_rawdata(schlaege_dir, data_info)
         data = harmonize_columns(data)
         data = first_index_reset(data, years)
-
+        data = add_row_id(data)
+        check_duplicate_row_ids(data)
+                                
         # Load admin area shape and set CRS
         land = gpd.read_file(os.path.join(admin_files_dir, "NDS_Landesflaeche.shp"))
         land = land.to_crs(epsg=25832)
@@ -512,7 +573,7 @@ def load_data(loadExistingData=False):
 
             del gdf_year, gdf_landkreise, gdf_regions
             gc.collect()
-            logging.info("Done!")
+        logging.info("Done!")
 
         return final_paths
 

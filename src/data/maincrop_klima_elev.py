@@ -12,25 +12,32 @@ from rasterstats import zonal_stats
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from pathlib import Path
 
-# %%
 # Set up the project root directory
 current_path = Path(__file__).resolve().parent
 for parent in [current_path] + list(current_path.parents):
-    if parent.name == "lower_saxony_fisc":
+    if parent.name == "lower_saxony_fisc": # lower_saxony_fisc or workspace
         os.chdir(parent)
         print(f"Changed working directory to: {parent}")
         break
 project_root=os.getcwd()
 data_main_path=open(project_root+"/datapath.txt").read()
 
-
-from src.analysis.desc import gridgdf_desc as gd
+from src.data.processing_griddata_utils import griddf_desc as gd
+from src.data.processing_fielddata_utils import field_dataset as fd
 
 ###########################################
 # %% load typically needed existing data
-gld, gridgdf = gd.silence_prints(gd.create_gridgdf)
-# I always want to load gridgdf and process clean gridgdf separately so I can have uncleeaned data for comparison or sensitivity analysis
-gridgdf_cl, _ = gd.clean_gridgdf(gridgdf)
+griddf = gd.silence_prints(gd.create_fullgriddf)
+# I always want to load griddf and process clean griddf separately so I can have uncleeaned data for comparison or sensitivity analysis
+griddf_cl, _ = gd.clean_griddf(griddf)
+
+# %%
+# make gridgdf_cl because we need to spatial join with climate and elevation data
+geom, gridgdf_cl = gd.to_gdf(griddf_cl)
+geom = geom[geom['CELLCODE'].isin(gridgdf_cl['CELLCODE'])].reset_index(drop=True)
+
+# %% load gld
+gld_no_geom = fd.get_gld_nogeoms()
 
 ###################################################################
 # process climatic zone
@@ -82,12 +89,9 @@ def plot_grid_with_attribute(grid_gdf, attr_col, title):
     plt.show()
 
 # %%
-# Strip down grid to unique geometries
-gridgdf = gridgdf_cl[['CELLCODE', 'geometry', 'LANDKREIS']].drop_duplicates('CELLCODE')
-
 # Assign KLIMAREGIO
 grid_with_klima = assign_attribute_by_largest_overlap(
-    gridgdf, data_main_path+"/raw/Klimaregionen/Klimaregionen.shp", "KLIMAREGIO"
+    geom, data_main_path+"/raw/Klimaregionen/Klimaregionen.shp", "KLIMAREGIO"
 )
 plot_grid_with_attribute(grid_with_klima, "KLIMAREGIO", "10km Grid with KLIMAREGIO")
 
@@ -109,12 +113,29 @@ else:
 # Also obtain main cultivated crop or kulturart FOR EACH landkreis
 ###################################################################
 # %% Sum area_ha across years by LANDKREIS and kulturart
-area_sum = (
-    gld.groupby(['LANDKREIS', 'kulturart', 'Gruppe'], as_index=False)['area_ha']
-       .sum()
-       .rename(columns={'area_ha': 'total_area_ha'})
-)
+area_sum_dict = {}
 
+for year, df in gld_no_geom.items():
+    if 'area_ha' in df.columns:
+        area_sum = (
+            df.groupby(['LANDKREIS', 'kulturart', 'Gruppe'], as_index=False)['area_ha']
+              .sum()
+              .rename(columns={'area_ha': 'total_area_ha'})
+        )
+        # assign the year
+        area_sum['year'] = year
+        # save to dict
+        area_sum_dict[year] = area_sum
+    else:
+        print(f"⚠️ Year {year} has no 'area_ha' column, skipping.")
+
+#%%
+# put all years' into one dataframe
+area_sum_allyears = pd.concat(area_sum_dict.values(), ignore_index=True)
+area_sum = (area_sum_allyears.groupby(['LANDKREIS', 'kulturart', 'Gruppe'], as_index=False)['total_area_ha']
+            .sum())
+
+# %%
 # For each LANDKREIS, find the kulturart with the maximum total_area_ha
 idx = area_sum.groupby('LANDKREIS')['total_area_ha'].idxmax()
 
@@ -171,7 +192,8 @@ climate_translation = {
     "Maritim-Subkontinentale Region": "Maritime–Subcontinental",
     "Maritime Region": "Maritime",
     "Subkontinentale Region": "Subcontinental",
-    "Submontane Region": "Submontane"
+    "Submontane Region": "Submontane",
+    "Montane Region": "Montane"
 }
 
 # Create new English column with translated climate zones
@@ -398,6 +420,16 @@ gridgdf_cluster_new = gridgdf_cluster.merge(gridgdf[['CELLCODE', 'mean_elevation
                     how='left')
 gridgdf_cluster_new.info()
 
-# %% save
-gridgdf_cluster_new.to_pickle(data_main_path+"/interim/gridgdf/gridgdf_klima_crop_elev.pkl")
+# %%
+#Drop geometry and create a regular DataFrame
+griddf_cluster = gridgdf_cluster_new.drop(columns='geometry').copy()
 
+#Save as parquet
+save_path = os.path.join(
+    data_main_path, "interim", "gridgdf", "griddf_klima_crop_elev.parquet"
+)
+if not os.path.exists(save_path):
+    griddf_cluster.to_parquet(save_path, index=False)
+    print(f"Saved griddf_cluster → {save_path}")
+else:
+    print(f"griddf_cluster already exists, skipping save → {save_path}")

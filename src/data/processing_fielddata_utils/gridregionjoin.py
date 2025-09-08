@@ -8,7 +8,7 @@ from pathlib import Path
 # Set up the project root directory
 current_path = Path(__file__).resolve().parent
 for parent in [current_path] + list(current_path.parents):
-    if parent.name == "lower_saxony_fisc":
+    if parent.name == "lower_saxony_fisc": # or workspace if not lower_saxony_fisc 
         os.chdir(parent)
         print(f"Changed working directory to: {parent}")
         break
@@ -20,8 +20,6 @@ data_main_path=open(project_root+"/datapath.txt").read()
 # the result is a GeoDataFrame with the grid cells that intersect with the landkreise boundaries.
 # the geodataframe is called and used in the dataload script to ssign landkreis and grid cell
 # to the field data points.
-
-'''This script should automatically run when called from the dataload script.'''
 
 def join_gridregion(loadExistingData=False):
 

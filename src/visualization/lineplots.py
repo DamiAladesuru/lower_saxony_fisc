@@ -10,7 +10,7 @@ import seaborn as sns
 current_path = Path(__file__).resolve().parent
 for parent in [current_path] + list(current_path.parents):
 
-    if parent.name == "lower_saxony_fisc":
+    if parent.name == "lower_saxony_fisc": # lower_saxony_fisc or workspace
         os.chdir(parent)
         print(f"Changed working directory to: {parent}")
         break
@@ -18,16 +18,17 @@ project_root=os.getcwd()
 data_main_path=open(project_root+"/datapath.txt").read()
 os.makedirs("reports/figures", exist_ok=True)
 
-from src.analysis.desc import gridgdf_desc as gd
+from src.data.processing_griddata_utils import griddf_desc as gd
 from src.visualization import plotting_module as pm
 
 # %% load data
-gld, gridgdf = gd.silence_prints(gd.create_gridgdf)
-# I always want to load gridgdf and process clean gridgdf separately so I can have uncleeaned data for comparison or sensitivity analysis
-gridgdf_cl, _ = gd.clean_gridgdf(gridgdf)
+griddf = gd.silence_prints(gd.create_fullgriddf)
+# I always want to load griddf and process clean griddf separately so I can have uncleeaned data for comparison or sensitivity analysis
+griddf_cl, _ = gd.clean_griddf(griddf)
+
 # %%
-_, grid_yearly_cl = gd.silence_prints(gd.desc_grid,gridgdf_cl)
-_, grid_yearly = gd.silence_prints(gd.desc_grid,gridgdf)
+_, grid_yearly_cl = gd.silence_prints(gd.desc_grid,griddf_cl)
+_, grid_yearly = gd.silence_prints(gd.desc_grid,griddf)
 
 ################################################################################
 # Figure 4: plot the aggregate study area trend of change in field metric values over time
@@ -67,14 +68,14 @@ pm.multiline_metrics(
 '''Goal is to create plot with grid trend lines and aggregate median line for each metric'''
 # %% function for subplots of grid metrics value with aggregate median line
 
-def create_fisc_trend_plots(fig, axs, gridgdf, grid_yearly, plot_configs, suptitle):
+def create_fisc_trend_plots(fig, axs, griddf, grid_yearly, plot_configs, suptitle):
     """
     Create a 2x2 subplot of FiSC trend plots.
     
     Parameters:
     fig (Figure): Matplotlib Figure object
     axs (Array of Axes): 2x2 array of Matplotlib Axes objects
-    gridgdf (DataFrame): DataFrame containing individual cell data
+    griddf (DataFrame): DataFrame containing individual cell data
     grid_yearly (DataFrame): DataFrame containing aggregate yearly data
     plot_configs (list): List of dictionaries containing plot configurations
     suptitle (str): Super title for the entire figure
@@ -88,8 +89,8 @@ def create_fisc_trend_plots(fig, axs, gridgdf, grid_yearly, plot_configs, suptit
         [ax.spines[side].set_visible(False) for side in ax.spines]
         
         # Plot individual lines for each unique CELLCODE
-        for cellcode in gridgdf['CELLCODE'].unique():
-            data = gridgdf[gridgdf['CELLCODE'] == cellcode]
+        for cellcode in griddf['CELLCODE'].unique():
+            data = griddf[griddf['CELLCODE'] == cellcode]
             ax.plot(data['year'], data[config['y_col']], color='grey', alpha=0.9, linewidth=0.5)
         
         # Plot the aggregate thick line and annotate
@@ -133,7 +134,7 @@ plot_configs = [
     {'ax': axs[3], 'title': 'Median Perimeter', 'y_col': 'medperi_percdiff_to_y1', 'agg_col': 'medperi_percdiffy1_med'}
     
 ]
-create_fisc_trend_plots(fig, axs, gridgdf_cl, grid_yearly_cl, plot_configs, 'Cell-level Changes in Field Structure Metrics Across Years')
+create_fisc_trend_plots(fig, axs, griddf_cl, grid_yearly_cl, plot_configs, 'Cell-level Changes in Field Structure Metrics Across Years')
 
 plt.subplots_adjust(left=0.09, wspace=0.2, hspace=0.2, top=0.80)
 fig.text(0.05, 0.45, 'Relative Diff (%) to Base Year 2012', va='center', ha='center', rotation='vertical', fontdict={'fontsize': 12}) #, transform=fig.transFigure
@@ -144,53 +145,5 @@ plt.savefig("reports/figures/FiSC_trendlinesPNG_.png", format="png", bbox_inches
 
 plt.show()
 
-################################################################################
-# Miscellaneous: FiSC metric for particular crops
-################################################################################
-'''here, I want to plot trend line for
-fields of cereals, grassland, forage and environmental because
-main cultivated kulturart in our data set includes
-mähweiden, silomais, winterweichweizen.
 
-We are gonna plot change in metrics for these kulturart,
-and then we are gonna plot change in metrics for environmental
-to see their gruppe plot, mähweiden is dauergrünland, silomais is
-ackerfutter and winterweichweizen is getreide
-'''
-
-# %%
-cropsubsample = 'winterweichweizen'
-#COMMENTJB: what is this function ss.griddf_speci_subsample?
-gld_ss, gridgdf = ss.griddf_speci_subsample(cropsubsample,
-                                            col1='kulturart', gld_data = gld)
-
-_, grid_yearlym = gd.silence_prints(gd.desc_grid,gridgdf)
-
-metrics = {
-    'Median Field Size': 'med_fsha_percdiffy1_med',
-    'Median Perimeter': 'medperi_percdiffy1_med',
-    'Median PAR': 'medpar_percdiffy1_med',
-    'Fields/TotalArea': 'fields_ha_percdiffy1_med'
-}
-
-color_mapping = {
-    #https://personal.sron.nl/~pault/
-    'Median Field Size': '#004488',
-    'Median Perimeter': '#EE7733',
-    'Median PAR': '#228833',
-    'Fields/TotalArea': '#CC3311',
-}
-
-pm.multiline_metrics(
-    df=grid_yearlym,
-    title="Trends in Field Metrics for Wheat (Winterweichweizen)",
-    ylabel="Aggregate Change (%) in Field Metric Value from 2012",
-    metrics=metrics,
-    format='svg',
-    save_path="reports/figures/winterweichweizen_trends.svg",
-    color_mapping=color_mapping
-)
-
-################################################################################
-# for plotting this for all crop groups or categories, see script groupcat_plots.py
 # %%

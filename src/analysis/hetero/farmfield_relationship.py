@@ -3,19 +3,27 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc": # or workspace if not lower_saxony_fisc
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+
+os.makedirs("reports/figures/farm_field", exist_ok=True)
+from src.data.processing_griddata_utils import griddf_desc as gd
 
 # %%
-grid_fanim = pd.read_pickle("data/interim/gridgdf/grid_fanim.pkl")
+grid_fanim = pd.read_parquet("data/interim/gridgdf/grid_fanim.parquet")
 '''grid_fanim is prepared in gridded_farmanimchange_data.py'''
+_, grid_fanim = gd.to_gdf(grid_fanim)
 
 # %%
 # Calculate the total farm count per year
@@ -180,9 +188,9 @@ plot_choropleth(
 def plot_grouped_regressions(df, x, y, xlabel, ylabel, suptitle, save_path=None):
     df_copy = df.copy()
     df_copy["main_crop_group"] = df_copy["main_crop_group"].replace({
-        "ackerfutter": "Forages",
-        "dauergrünland": "Grasslands",
-        "getreide": "Cereals"
+        "Ackerfutter": "Forages",
+        "Dauergrünland": "Grasslands",
+        "Getreide": "Cereals"
     })
     
     # Add 'All' group

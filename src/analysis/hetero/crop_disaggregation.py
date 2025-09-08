@@ -1,28 +1,57 @@
 # %%
+from pathlib import Path
 import os
 import pandas as pd
+from pathlib import Path
+
+from src.data.processing_griddata_utils import griddf_desc as gd
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
+    if parent.name == "lower_saxony_fisc": # or workspace if not lower_saxony_fisc
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root = os.getcwd()
+data_main_path = open(project_root + "/datapath.txt").read()
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
 
-from src.analysis.desc import gridgdf_desc as gd
-
-#%% load extended gridgdf i.e., grid level data with climate, main crop, elevation and other attributes
-gld, _ = gd.silence_prints(gd.create_gridgdf)
-gridgdf_cluster = pd.read_pickle('data/interim/gridgdf/gridgdf_naturraum_klima_east_elev.pkl')
+os.makedirs("reports/kchange_csvs", exist_ok=True)
 
 # %%
-def create_filtered_dfs(gridgdf, year, category_col, category_mapping):
+# Load data and create no-geometry combined DataFrame
+gld_allyears = gd.load_geodata()
+# %%
+gld_no_geom = {}
+for year, gdf in gld_allyears.items():
+    df_no_geom = gdf.drop(columns=['geometry']).copy()
+    gld_no_geom[year] = df_no_geom
+
+# %%
+# Select the years you want
+years_to_combine = [2012, 2024]
+
+# Concatenate into a single DataFrame, adding a year column
+gld = pd.concat(
+    [gld_no_geom[year].assign(year=year) for year in years_to_combine],
+    ignore_index=True
+)
+
+print(gld.head())
+print(f"Shape of combined DataFrame: {gld.shape}")
+
+
+#%% load extended griddf i.e., grid level data with climate, main crop, elevation and other attributes
+griddf_cluster = pd.read_parquet('data/interim/gridgdf/griddf_klima_crop_elev.parquet')
+
+# %%
+def create_filtered_dfs(griddf, year, category_col, category_mapping):
     """
     Create DataFrames for each category value in a specific column for a given year.
 
     Parameters:
-    - gridgdf: GeoDataFrame containing the data
+    - griddf: DataFrame containing the data
     - year: int, the year to filter on
     - category_col: str, column name to use for category filtering
     - category_mapping: dict, mapping of labels to column values 
@@ -33,9 +62,9 @@ def create_filtered_dfs(gridgdf, year, category_col, category_mapping):
     """
     filtered_dfs = {}
     for label, value in category_mapping.items():
-        filtered_df = gridgdf[
-            (gridgdf['year'] == year) &
-            (gridgdf[category_col] == value)
+        filtered_df = griddf[
+            (griddf['year'] == year) &
+            (griddf[category_col] == value)
         ]
         filtered_dfs[label] = filtered_df
 
@@ -44,16 +73,17 @@ def create_filtered_dfs(gridgdf, year, category_col, category_mapping):
 '''
 # For 'eastwest':
 category_mapping = {'west': 1, 'east': 0}
-dfs = create_filtered_dfs(gridgdf_cluster, 2020, 'eastwest', category_mapping)
+dfs = create_filtered_dfs(griddf_cluster, 2020, 'eastwest', category_mapping)
 '''
 # %%
 # For 'main_crop_group':
 category_mapping = {
-    'forage': 'ackerfutter',
-    'grassland': 'dauergrünland',
-    'cereal': 'getreide'
+    'forage': 'Ackerfutter',
+    'grassland': 'Dauergrünland',
+    'cereal': 'Getreide',
+    'roots': 'Hackfrüchte'
 }
-cat_dfs = create_filtered_dfs(gridgdf_cluster, 2023, 'main_crop_group', category_mapping)
+cat_dfs = create_filtered_dfs(griddf_cluster, 2024, 'main_crop_group', category_mapping)
 
 # %%
 def create_gld_subsets(dfs, gld):
@@ -72,7 +102,7 @@ gld_subsets = create_gld_subsets(cat_dfs, gld)
 ##################### Appendix A ########################
 # Set year variables
 year1 = 2012
-year2 = 2023
+year2 = 2024
 top_n = 10  # number of top kulturart to keep
 
 # --- Step 1: Total area across all years ---
@@ -97,42 +127,42 @@ aggregated_2012 = gld[gld['year'] == year1].groupby('kulturart').agg(
 ).join(total_area_all_years_df)
 
 
-# --- Step 3: Aggregate for 2023 ---
-aggregated_2023 = gld[gld['year'] == year2].groupby('kulturart').agg(
-    area_ha_2023=('area_ha', 'sum'),
-    area_med_2023=('area_ha', 'median'),
-    shape_med_2023=('shape', 'median'),
-    row_count_2023=('kulturart', 'size')
+# --- Step 3: Aggregate for 2024 ---
+aggregated_2024 = gld[gld['year'] == year2].groupby('kulturart').agg(
+    area_ha_2024=('area_ha', 'sum'),
+    area_med_2024=('area_ha', 'median'),
+    shape_med_2024=('shape', 'median'),
+    row_count_2024=('kulturart', 'size')
 ).join(total_area_all_years_df)
 
 
 # --- Step 4: Merge both years ---
 df_group = pd.merge(
     aggregated_2012,
-    aggregated_2023,
+    aggregated_2024,
     how='outer',
     left_index=True,
     right_index=True,
-    suffixes=('_2012', '_2023')
+    suffixes=('_2012', '_2024')
 )
 # Calculate how many fields each hectare of each kulturart has
 df_group['fields_ha_2012'] = (
     df_group['row_count_2012'] / df_group['area_ha_2012']
 )
 df_group['fields_ha_2012'] = df_group['fields_ha_2012'].round(2)
-df_group['fields_ha_2023'] = (
-    df_group['row_count_2023'] / df_group['area_ha_2023']
+df_group['fields_ha_2024'] = (
+    df_group['row_count_2024'] / df_group['area_ha_2024']
 )
-df_group['fields_ha_2023'] = df_group['fields_ha_2023'].round(2)
+df_group['fields_ha_2024'] = df_group['fields_ha_2024'].round(2)
 
 # Ensure we carry total_area_all_years and area_percent_all_years only once
-df_group['total_area_all_years'] = df_group['total_area_all_years_2012'].fillna(df_group['total_area_all_years_2023'])
-df_group['area_percent_all_years'] = df_group['area_percent_all_years_2012'].fillna(df_group['area_percent_all_years_2023'])
+df_group['total_area_all_years'] = df_group['total_area_all_years_2012'].fillna(df_group['total_area_all_years_2024'])
+df_group['area_percent_all_years'] = df_group['area_percent_all_years_2012'].fillna(df_group['area_percent_all_years_2024'])
 
 # Drop duplicate columns
 df_group.drop(columns=[
-    'total_area_all_years_2012', 'total_area_all_years_2023',
-    'area_percent_all_years_2012', 'area_percent_all_years_2023'
+    'total_area_all_years_2012', 'total_area_all_years_2024',
+    'area_percent_all_years_2012', 'area_percent_all_years_2024'
 ], inplace=True)
 
 
@@ -140,16 +170,16 @@ df_group.drop(columns=[
 df_group.fillna(0, inplace=True)
 
 # --- Step 5: Calculate Differences ---
-df_group['areadiff_y2_y1'] = df_group['area_ha_2023'] - df_group['area_ha_2012']
-df_group['medfsdiff_y2_y1'] = df_group['area_med_2023'] - df_group['area_med_2012']
-df_group['shapediff_y2_y1'] = df_group['shape_med_2023'] - df_group['shape_med_2012']
-df_group['fieldsdiff_y2_y1'] = df_group['row_count_2023'] - df_group['row_count_2012']
-df_group['fields_ha_diff_y2_y1'] = df_group['fields_ha_2023'] - df_group['fields_ha_2012']
+df_group['areadiff_y2_y1'] = df_group['area_ha_2024'] - df_group['area_ha_2012']
+df_group['medfsdiff_y2_y1'] = df_group['area_med_2024'] - df_group['area_med_2012']
+df_group['shapediff_y2_y1'] = df_group['shape_med_2024'] - df_group['shape_med_2012']
+df_group['fieldsdiff_y2_y1'] = df_group['row_count_2024'] - df_group['row_count_2012']
+df_group['fields_ha_diff_y2_y1'] = df_group['fields_ha_2024'] - df_group['fields_ha_2012']
 
 # Ensure all numeric columns are of type float
 numeric_cols = [
-    'area_ha_2012', 'area_ha_2023', 'area_med_2012', 'area_med_2023',
-    'shape_med_2012', 'shape_med_2023', 'row_count_2012', 'row_count_2023',
+    'area_ha_2012', 'area_ha_2024', 'area_med_2012', 'area_med_2024',
+    'shape_med_2012', 'shape_med_2024', 'row_count_2012', 'row_count_2024',
     'total_area_all_years', 'area_percent_all_years',
     'areadiff_y2_y1', 'medfsdiff_y2_y1', 'shapediff_y2_y1',
     'fieldsdiff_y2_y1', 'fields_ha_diff_y2_y1'
@@ -185,12 +215,16 @@ for key, df in cat_dfs.items():
         negative = (df[col] < 0).sum()
         zero = (df[col] == 0).sum()
 
-        pos_prop = (positive / total)*100
+        pos_prop = (positive / total) * 100
         
+        # counts & proportions
         row[f'{col}_pos'] = positive
         row[f'{col}_neg'] = negative
         row[f'{col}_zero'] = zero
         row[f'{col}_positive_proportion'] = pos_prop
+
+        # averages across CELLCODEs
+        row[f'{col}_mean'] = df[col].mean(skipna=True)
 
     summary_stats.append(row)
 
@@ -199,6 +233,54 @@ summary_df = pd.DataFrame(summary_stats)
 
 # Save to CSV
 summary_df.to_csv("reports/kchange_csvs/maincrop_dfs_summary.csv", index=False, encoding='utf-8-sig')
+
+print(summary_df)
+
+# %%
+summary_stats = []
+
+columns_to_analyze = ['fields_ha_percdiff_to_y1', 'medfs_ha_percdiff_to_y1']
+
+for key, df in cat_dfs.items():
+    # group by LANDKREIS instead of CELLCODE
+    grouped = df.groupby("LANDKREIS")
+
+    for landkreis, g in grouped:
+        total = g['CELLCODE'].nunique()
+
+        row = {
+            'category': key,
+            'LANDKREIS': landkreis,
+            'total_cellcodes': total
+        }
+
+        for col in columns_to_analyze:
+            positive = (g[col] > 0).sum()
+            negative = (g[col] < 0).sum()
+            zero = (g[col] == 0).sum()
+
+            pos_prop = (positive / total) * 100 if total > 0 else 0
+
+            # counts & proportions
+            row[f'{col}_pos'] = positive
+            row[f'{col}_neg'] = negative
+            row[f'{col}_zero'] = zero
+            row[f'{col}_positive_proportion'] = pos_prop
+
+            # average across CELLCODEs in this LANDKREIS
+            row[f'{col}_mean'] = g[col].mean(skipna=True)
+
+        summary_stats.append(row)
+
+# Create summary DataFrame
+summary_df_landkreis = pd.DataFrame(summary_stats)
+
+# Save to CSV
+summary_df_landkreis.to_csv("reports/kchange_csvs/maincrop_dfs_summary_landkreis.csv",
+                            index=False, encoding='utf-8-sig')
+
+print(summary_df_landkreis.head())
+
 
 # %%
 def calculate_change_for_groups(groups_dict, year1, year2):
@@ -215,15 +297,15 @@ def calculate_change_for_groups(groups_dict, year1, year2):
             row_count_2012=('kulturart', 'size')
         )
 
-        aggregated_2023 = group_data[group_data['year'] == year2].groupby('kulturart').agg(
-            area_ha_2023=('area_ha', 'sum'),
-            area_med_2023=('area_ha', 'median'),
-            row_count_2023=('kulturart', 'size')
+        aggregated_2024 = group_data[group_data['year'] == year2].groupby('kulturart').agg(
+            area_ha_2024=('area_ha', 'sum'),
+            area_med_2024=('area_ha', 'median'),
+            row_count_2024=('kulturart', 'size')
         )
 
-        # Merge the 2012 and 2023 aggregated data for comparison
+        # Merge the 2012 and 2024 aggregated data for comparison
         df_group = pd.merge(aggregated_2012[[f"area_ha_{year1}", f"area_med_{year1}", f"row_count_{year1}"]],
-                             aggregated_2023[[f"area_ha_{year2}", f"area_med_{year2}", f"row_count_{year2}"]],
+                             aggregated_2024[[f"area_ha_{year2}", f"area_med_{year2}", f"row_count_{year2}"]],
                              how='outer',
                              left_index=True, right_index=True)
 
@@ -233,14 +315,14 @@ def calculate_change_for_groups(groups_dict, year1, year2):
         # Calculate how many fields each hectare of each kulturart has
         df_group['fields_ha_2012'] = (df_group['row_count_2012'] / df_group['area_ha_2012'])
         df_group['fields_ha_2012'] = df_group['fields_ha_2012'].round(2)
-        df_group['fields_ha_2023'] = (df_group['row_count_2023'] / df_group['area_ha_2023'])
-        df_group['fields_ha_2023'] = df_group['fields_ha_2023'].round(2)
+        df_group['fields_ha_2024'] = (df_group['row_count_2024'] / df_group['area_ha_2024'])
+        df_group['fields_ha_2024'] = df_group['fields_ha_2024'].round(2)
 
-        # Calculate the difference in rows between 2023 and 2012 for each kulturart
+        # Calculate the difference in rows between 2024 and 2012 for each kulturart
         df_group['areadiffy2_y1'] = df_group[f"area_ha_{year2}"] - df_group[f"area_ha_{year1}"]
         df_group['medfsdiffy2_y1'] = df_group[f"area_med_{year2}"] - df_group[f"area_med_{year1}"]
         df_group['fieldsdiffy2_y1'] = df_group[f"row_count_{year2}"] - df_group[f"row_count_{year1}"]
-        df_group['fields_hadiffy2_y1'] = df_group['fields_ha_2023'] - df_group['fields_ha_2012']
+        df_group['fields_hadiffy2_y1'] = df_group['fields_ha_2024'] - df_group['fields_ha_2012']
         
         # Identify the direction of change per crop
         df_group['crop_area_direction_of_change'] = df_group['areadiffy2_y1'].apply(
@@ -266,16 +348,16 @@ def calculate_change_for_groups(groups_dict, year1, year2):
  
         total_rows_2012 = group_data[group_data['year'] == year1].shape[0]
         total_area_2012 = group_data[group_data['year'] == year1]['area_ha'].sum()
-        total_rows_2023 = group_data[group_data['year'] == year2].shape[0]
-        total_area_2023 = group_data[group_data['year'] == year2]['area_ha'].sum()
+        total_rows_2024 = group_data[group_data['year'] == year2].shape[0]
+        total_area_2024 = group_data[group_data['year'] == year2]['area_ha'].sum()
 
         total_fields_ha_2012 = total_rows_2012 / total_area_2012 if total_area_2012 != 0 else 0
-        total_fields_ha_2023 = total_rows_2023 / total_area_2023 if total_area_2023 != 0 else 0
+        total_fields_ha_2024 = total_rows_2024 / total_area_2024 if total_area_2024 != 0 else 0
 
-        aggregate_fields_hadiff = total_fields_ha_2023 - total_fields_ha_2012
+        aggregate_fields_hadiff = total_fields_ha_2024 - total_fields_ha_2012
 
         df_group['total_fields_ha_2012'] = total_fields_ha_2012
-        df_group['total_fields_ha_2023'] = total_fields_ha_2023
+        df_group['total_fields_ha_2024'] = total_fields_ha_2024
         df_group['aggregate_fields_hadiff'] = aggregate_fields_hadiff
         
         
@@ -284,7 +366,7 @@ def calculate_change_for_groups(groups_dict, year1, year2):
 
     return results
 
-change = calculate_change_for_groups(gld_subsets, 2012, 2023)
+change = calculate_change_for_groups(gld_subsets, 2012, 2024)
 
 # %%
 def get_top_changes(dfs: dict, column: str, top_n: int = 10, save_to_csv: bool = False, output_dir: str = "."):
@@ -338,5 +420,42 @@ filtered_top_kultur = filter_by_top_kultur(
     save_to_csv=True,
     output_dir="reports/kchange_csvs"
 )
+
+# %%
+summary_stats = []
+
+for subset_name, df in gld_subsets.items():
+    # filter by years 2012 and 2024
+    df_2012 = df[df["year"] == 2012]
+    df_2024 = df[df["year"] == 2024]
+
+    # number of rows
+    count_2012 = len(df_2012)
+    count_2024 = len(df_2024)
+    count_diff = count_2024 - count_2012
+
+    # total area (ha)
+    area_2012 = df_2012["area_ha"].sum()
+    area_2024 = df_2024["area_ha"].sum()
+    area_diff = area_2024 - area_2012
+
+    # collect results
+    summary_stats.append({
+        "subset": subset_name,
+        "rows_2012": count_2012,
+        "rows_2024": count_2024,
+        "row_diff": count_diff,
+        "area_ha_2012": area_2012,
+        "area_ha_2024": area_2024,
+        "area_ha_diff": area_diff
+    })
+
+# Create DataFrame with results
+summary_df = pd.DataFrame(summary_stats)
+
+# Save to CSV if needed
+summary_df.to_csv("reports/kchange_csvs/gld_subsets_2012_2024_summary.csv", index=False, encoding="utf-8-sig")
+
+print(summary_df)
 
 # %%

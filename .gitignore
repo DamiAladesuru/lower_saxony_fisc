@@ -154,6 +154,7 @@ cython_debug/
 
 # Ignores
 # Ignore data and report folder in main
+archiv/*
 # Ignore everything in data/
 data/*
 # Except data/raw/nieder_origin/kulturcodes/ and its contents

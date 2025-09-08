@@ -1,23 +1,30 @@
 # %% Import necessary libraries
 import zipfile
 import pandas as pd
+from pathlib import Path
 import os
 import xml.etree.ElementTree as ET
 import geopandas as gpd
 import numpy as np
 
 # Set up the project root directory
-script_dir = os.path.dirname(__file__)
-project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))  # or two levels up if needed
-print(project_root)
+current_path = Path(__file__).resolve().parent
+for parent in [current_path] + list(current_path.parents):
 
-os.chdir(project_root)
-print("Current working dir:", os.getcwd())
+    if parent.name == "lower_saxony_fisc": # lower_saxony_fisc or workspace
+        os.chdir(parent)
+        print(f"Changed working directory to: {parent}")
+        break
+project_root=os.getcwd()
+data_main_path=open(project_root+"/datapath.txt").read()
+
+from src.data.processing_griddata_utils import griddf_desc as gd
+os.makedirs("reports/figures", exist_ok=True)
 
 ###########################################
 # %% load needed existing data
-# gridgdf_cl with naturraum, klima and eastwest columns
-gridgdf_cluster = pd.read_pickle('data/interim/gridgdf/gridgdf_naturraum_klima_east_elev.pkl')
+# griddf_cl with klima and elev columns
+griddf_cluster = pd.read_parquet('data/interim/gridgdf/griddf_klima_crop_elev.parquet')
 
 #############################################
 # %%
@@ -200,7 +207,7 @@ viehbestand = viehbestand[~viehbestand['LANDKREIS_STANDARDIZED'].str.contains('S
 
 # Get unique LANDKREIS values from both DataFrames
 vieh_landkreise = set(viehbestand['LANDKREIS_STANDARDIZED'].unique())
-grid_landkreise = set(gridgdf_cluster["LANDKREIS"].unique())
+grid_landkreise = set(griddf_cluster["LANDKREIS"].unique())
 
 # Check if they are the same
 if vieh_landkreise == grid_landkreise:
@@ -634,18 +641,17 @@ columns_to_keep = [
     'LANDKREIS', 'CELLCODE', 'year', 'medfs_ha', 'medfs_ha_yearly_percdiff',
     'fields', 'fsha_sum', 'fields_ha', 'fields_ha_yearly_percdiff',
     'medfs_ha_percdiff_to_y1', 'fields_ha_percdiff_to_y1',
-    'geometry', 'eastwest', 'main_Klima_EN',
-    'Naturraum', 'main_crop', 'main_crop_group'
+    'main_Klima_EN', 'main_crop', 'main_crop_group'
 ]
 
 # Drop all other columns
-df_grids = gridgdf_cluster[columns_to_keep]
+df_grids = griddf_cluster[columns_to_keep]
 
 # %%
 grid_fanim = farm_anim_ydiff_all.merge(df_grids, on=["LANDKREIS", "year"])
 
 grid_fanim.info()
+grid_fanim.to_parquet("data/interim/gridgdf/grid_fanim.parquet")
+# %% make grid_fanim dataframes
+# grid_fanim = gpd.GeoDataFrame(grid_fanim, geometry='geometry')
 
-# %% make grid_fanim geodataframes
-grid_fanim = gpd.GeoDataFrame(grid_fanim, geometry='geometry')
-grid_fanim.to_pickle("data/interim/gridgdf/grid_fanim.pkl")
